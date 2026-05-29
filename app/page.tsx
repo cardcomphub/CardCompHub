@@ -1,65 +1,260 @@
-import Image from "next/image";
+import { createClient } from '@supabase/supabase-js'
+import Link from 'next/link'
 
-export default function Home() {
+export const dynamic = 'force-dynamic';
+
+const getSupabaseClient = () => {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co'
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder'
+  return createClient(supabaseUrl, supabaseAnonKey)
+}
+
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; sport?: string }>;
+}) {
+  const supabase = getSupabaseClient()
+  
+  // Resolve incoming search tokens and sport parameters
+  const resolvedSearchParams = await searchParams
+  const searchQuery = resolvedSearchParams?.q || ''
+  const sportFilter = resolvedSearchParams?.sport || ''
+
+  // 1. Fetch the master card footprint with its relational parent set references cleanly
+  const { data: allCards, error } = await supabase
+    .from('base_cards')
+    .select(`
+      id,
+      card_number,
+      player_name,
+      is_rookie,
+      image_url,
+      card_sets (year, brand, series, sport)
+    `)
+    .order('player_name', { ascending: true })
+
+  if (error) {
+    console.error('Error loading master index checklist data:', error)
+  }
+
+  // 2. IN-MEMORY FILTERING PIPELINE: 100% bulletproof casing and relationship processing
+  let filteredCards = allCards || []
+
+  // Apply case-insensitive text search matching
+  if (searchQuery) {
+    filteredCards = filteredCards.filter((card) => 
+      card.player_name?.toLowerCase().includes(searchQuery.toLowerCase())
+    )
+  }
+
+  // Apply case-insensitive sport filtering matching
+  if (sportFilter) {
+    filteredCards = filteredCards.filter((card) => {
+      const setInfo = Array.isArray(card.card_sets) ? card.card_sets[0] : card.card_sets;
+      return setInfo?.sport?.toLowerCase() === sportFilter.toLowerCase()
+    })
+  }
+
+  // --- PROGRAMMATIC DASHBOARD MAP GENERATION ---
+  const totalCardFootprint = filteredCards.length
+  const sportsMap: Record<string, any[]> = {}
+  const brandsSet = new Set<string>()
+
+  filteredCards.forEach((card) => {
+    const setInfo = Array.isArray(card.card_sets) ? card.card_sets[0] : card.card_sets;
+    const sport = setInfo?.sport || 'Other Sports';
+    if (setInfo?.brand) brandsSet.add(setInfo.brand);
+
+    if (!sportsMap[sport]) sportsMap[sport] = [];
+    sportsMap[sport].push({ ...card, setInfo });
+  });
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="bg-slate-950 text-slate-100 selection:bg-emerald-500 selection:text-slate-950 pb-20">
+      
+      {/* HERO SECTION */}
+      <section className="relative overflow-hidden border-b border-slate-900 bg-slate-900/10 py-16 px-6 md:px-12">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.02)_0,transparent_55%)]" />
+        <div className="relative max-w-7xl mx-auto flex flex-col lg:flex-row lg:items-center lg:justify-between gap-10">
+          
+          <div className="max-w-xl text-left w-full">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400 border border-emerald-500/20 font-mono mb-4">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" /> Platform Analytics Engine Active
+            </span>
+            <h1 className="text-3xl font-black tracking-tight text-white sm:text-5xl font-sans">
+              Hobby Index <span className="text-emerald-400">Dashboard</span>
+            </h1>
+            <p className="mt-3 text-xs md:text-sm text-slate-400 font-medium leading-relaxed mb-6">
+              Search across active checklists, explore modern manufacturing sets, and locate real-time market value valuation metrics.
+            </p>
+
+            {/* HIGH-PERFORMANCE SEARCH BAR */}
+            <form action="/" method="GET" className="relative max-w-md w-full flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  name="q"
+                  defaultValue={searchQuery}
+                  placeholder="Search player name (e.g., Stroud, Mahomes)..."
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 rounded-xl px-4 py-2.5 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none transition-colors"
+                />
+                {sportFilter && <input type="hidden" name="sport" value={sportFilter} />}
+                
+                {searchQuery && (
+                  <Link
+                    href={sportFilter ? `/?sport=${sportFilter}` : "/"}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-xs font-mono font-bold"
+                  >
+                    Clear
+                  </Link>
+                )}
+              </div>
+              <button
+                type="submit"
+                className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mono text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-lg shadow-emerald-950/20"
+              >
+                Search
+              </button>
+            </form>
+          </div>
+
+          {/* Quick Metrics Widget Panel */}
+          <div className="grid grid-cols-3 gap-4 w-full lg:max-w-md font-mono bg-slate-900/40 border border-slate-900 p-5 rounded-2xl shadow-xl h-fit">
+            <div className="border-r border-slate-800/60 p-1">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Matches</p>
+              <p className="text-xl font-black text-white mt-1">{totalCardFootprint}</p>
+            </div>
+            <div className="border-r border-slate-800/60 p-1 pl-3">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Brands</p>
+              <p className="text-xl font-black text-emerald-400 mt-1">{brandsSet.size}</p>
+            </div>
+            <div className="p-1 pl-3">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Sports</p>
+              <p className="text-xl font-black text-blue-400 mt-1">{Object.keys(sportsMap).length}</p>
+            </div>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
+      </section>
+
+      {/* HUBS SEGMENTATION LAYOUT */}
+      <div className="max-w-7xl mx-auto px-6 mt-12 space-y-12">
+        
+        {/* Active Context Breadcrumbs */}
+        {(sportFilter || searchQuery) && (
+          <div className="bg-slate-900/40 border border-slate-900 rounded-xl px-4 py-3 text-xs font-mono text-slate-400 flex items-center justify-between">
+            <div>
+              Active Filter Parameters: {sportFilter && <span className="text-emerald-400 font-bold">Sport: {sportFilter}</span>} {searchQuery && <span className="text-blue-400 font-bold ml-2">Search: "{searchQuery}"</span>}
+            </div>
+            <Link href="/" className="text-xxs font-bold uppercase text-slate-500 hover:text-slate-300 underline">
+              Reset Filters
+            </Link>
+          </div>
+        )}
+
+        {/* Sports Categories Directory Panel */}
+        <section id="categories">
+          <div className="border-b border-slate-900 pb-3 mb-5">
+            <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-500" /> Filtered Checklist Sub-Hubs
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {Object.keys(sportsMap).length > 0 ? (
+              Object.keys(sportsMap).sort().map((sport) => (
+                <Link 
+                  key={sport} 
+                  href={`/?sport=${sport}`}
+                  className="group bg-slate-900/30 border border-slate-900 hover:border-slate-800 rounded-xl p-4 flex items-center justify-between transition-all hover:bg-slate-900/60"
+                >
+                  <div>
+                    <h3 className="font-bold text-slate-300 group-hover:text-blue-400 text-xs transition-colors">{sport} Hub</h3>
+                    <p className="text-[10px] text-slate-500 font-mono mt-0.5 uppercase tracking-wider">{sportsMap[sport].length} Matches</p>
+                  </div>
+                  <span className="text-slate-700 group-hover:text-slate-400 font-mono text-xs transition-colors">&rarr;</span>
+                </Link>
+              ))
+            ) : (
+              <div className="col-span-full text-slate-500 italic font-mono text-xs text-center py-4 bg-slate-900/10 border border-slate-900 rounded-xl">
+                No categorical segments match your current filter parameters.
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* DYNAMIC CHECKLIST HUBS SECTION */}
+        <section id="master-directory" className="scroll-mt-20">
+          <div className="border-b border-slate-900 pb-3 mb-6">
+            <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Active Checklist Index Tables
+            </h2>
+          </div>
+
+          <div className="space-y-10">
+            {Object.keys(sportsMap).length > 0 ? (
+              Object.keys(sportsMap).sort().map((sport) => {
+                const sportCards = sportsMap[sport];
+                return (
+                  <div key={sport} className="bg-slate-900/10 border border-slate-900 rounded-2xl p-5">
+                    <h3 className="text-sm font-bold text-white mb-3 font-mono tracking-wider uppercase border-b border-slate-900/80 pb-2 flex items-center justify-between">
+                      <span>{sport} Database</span>
+                      <span className="text-xxs text-slate-500 normal-case font-normal">({sportCards.length} matching entries)</span>
+                    </h3>
+
+                    <div className="overflow-x-auto border border-slate-900 rounded-xl bg-slate-950/40">
+                      <table className="w-full text-left border-collapse text-xxs font-mono">
+                        <thead>
+                          <tr className="bg-slate-950 border-b border-slate-900 text-slate-500 font-bold uppercase tracking-wider">
+                            <th className="py-2.5 px-4 w-20">Card Ref</th>
+                            <th className="py-2.5 px-4">Player Profile Name</th>
+                            <th className="py-2.5 px-4">Set Specification</th>
+                            <th className="py-2.5 px-4">Brand Line</th>
+                            <th className="py-2.5 px-4 text-right w-24">Analysis</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-900 text-slate-300">
+                          {sportCards.map((card) => (
+                            <tr key={card.id} className="hover:bg-slate-900/30 transition-colors group">
+                              <td className="py-2.5 px-4 font-bold text-slate-600">#{card.card_number || 'N/A'}</td>
+                              <td className="py-2.5 px-4 font-sans font-bold text-slate-200">
+                                <Link href={`/cards/${card.id}`} className="hover:text-emerald-400 transition-colors flex items-center gap-1.5">
+                                  {card.player_name}
+                                  {card.is_rookie && <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[8px] px-1 rounded font-black">RC</span>}
+                                </Link>
+                              </td>
+                              <td className="py-2.5 px-4 text-slate-400">{card.setInfo?.year} {card.setInfo?.series}</td>
+                              <td className="py-2.5 px-4">
+                                <span className="bg-slate-950 px-1.5 py-0.5 rounded border border-slate-900 text-slate-400 text-[9px] font-bold">
+                                  {card.setInfo?.brand}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-4 text-right">
+                                <Link href={`/cards/${card.id}`} className="text-emerald-500 hover:text-emerald-400 font-bold uppercase tracking-wider text-[9px]">
+                                  View Comps &rarr;
+                                </Link>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-center py-16 border border-dashed border-slate-900 rounded-2xl bg-slate-900/10">
+                <p className="text-xs text-slate-500 font-mono">No trading card rows match the parameters inside your current catalog selection.</p>
+              </div>
+            )}
+          </div>
+        </section>
+
+      </div>
+
+      {/* FOOTER */}
+      <footer className="border-t border-slate-900 mt-24 bg-slate-950 py-8 text-center text-xs font-mono text-slate-600">
+        <p>&copy; {new Date().getFullYear()} CardCompHub. All data schemas processed and indexed across global database clusters.</p>
+      </footer>
+    </main>
+  )
 }
