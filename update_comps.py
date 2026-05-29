@@ -150,12 +150,30 @@ def run_pipeline():
         if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
             supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
 
+        # Gather the local Base variation ID ahead of processing to compare against mismatches
+        base_var = next((v for v in variants if v['variant_name'].lower() == 'base'), None)
+        base_variant_id = base_var['id'] if base_var else None
+
         price_entries = []
         for comp in raw_comps:
+            # 🛑 GUARDRAIL 1: Instantly disregard corrupted outlier scrape price targets
+            if comp['price'] > 10000:
+                continue
+
             title_lower = comp['title'].lower()
             matched_variant_id = find_matching_variant(title_lower, variants)
             
             if matched_variant_id:
+                # 🛑 GUARDRAIL 2: Reject listings misclassifying into Base if they are lots or high-end parallels
+                if matched_variant_id == base_variant_id:
+                    trash_keywords = [
+                        "lot", "bulk", "set of", "bundle", "complete set", 
+                        "auto", "signed", "autograph", "patch", "jersey", "relic",
+                        "1/1", "one of one", "printing plate"
+                    ]
+                    if any(word in title_lower for word in trash_keywords):
+                        continue # Skip this row completely
+                
                 grade = "Raw"
                 if "psa 10" in title_lower: grade = "PSA 10"
                 elif "psa 9" in title_lower: grade = "PSA 9"
