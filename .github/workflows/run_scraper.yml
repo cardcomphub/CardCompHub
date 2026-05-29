@@ -2,8 +2,8 @@ name: CardCompHub Price Tracker Pipeline
 
 on:
   schedule:
-    # ⏰ Runs automatically every single night at 12:00 AM UTC
-    - cron: '0 0 * * *'
+    # ⏰ Runs automatically every single day at 5:00 AM Eastern Time (9:00 AM UTC)
+    - cron: '0 9 * * *'
   workflow_dispatch:
     # 🛠️ Enables manual test runs from the Actions tab
 
