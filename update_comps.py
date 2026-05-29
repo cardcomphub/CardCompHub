@@ -132,8 +132,9 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
 def run_pipeline():
     print("🚀 Running data stream sync loop...")
+    # 🌟 SCHEMA UPDATE: Added 'slug' parameter fetch into base_cards entity query selection
     response = supabase.table("base_cards").select(
-        "id, player_name, card_number, image_url, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
+        "id, player_name, card_number, image_url, slug, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
     ).execute()
     cards = response.data
 
@@ -187,8 +188,12 @@ def run_pipeline():
                 })
 
         if price_entries:
-            supabase.table("price_comps").insert(price_entries[:10]).execute()
-            print(f"📊 Successfully updated database with localized layout metrics rows for {card['player_name']}!")
+            # 🛡️ RESILIENCE GUARDRAIL 3: Prevent mid-run database modifications/deletions from crashing the pipeline script
+            try:
+                supabase.table("price_comps").insert(price_entries[:10]).execute()
+                print(f"📊 Successfully updated database with localized layout metrics rows for {card['player_name']}!")
+            except Exception as db_write_error:
+                print(f"⚠️ Database write skipped dynamically for {card['player_name']}: {db_write_error}")
             
         time.sleep(1)
 
