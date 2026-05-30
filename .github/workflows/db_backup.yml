@@ -23,7 +23,7 @@ jobs:
         env:
           PGPASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: "postgres"
+          DB_USER: "postgres.mjnzpmkzdtrdpwzpgvdo" # 🌟 FIXED: Updated to match your unique pooler user format
           DB_NAME: "postgres"
         run: |
           # Create a clean, unique timestamp for the backup archive file name
