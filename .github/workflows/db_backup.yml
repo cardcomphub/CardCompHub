@@ -1,0 +1,50 @@
+name: Automated Weekly Database Backup
+
+on:
+  schedule:
+    # 🕒 Automatically runs at 00:00 every Sunday (UTC)
+    - cron: '0 0 * * 0'
+  workflow_dispatch: # 🚀 Allows you to click a button and run a backup manually anytime
+
+jobs:
+  database-backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code Architecture
+        uses: actions/checkout@v4
+
+      - name: Install Native PostgreSQL Client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Execute pg_dump Engine
+        env:
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: "postgres"
+          DB_NAME: "postgres"
+        run: |
+          # Create a clean, unique timestamp for the backup archive file name
+          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
+          SQL_FILE="cardcomphub_backup_$TIMESTAMP.sql"
+          ZIP_FILE="cardcomphub_backup_$TIMESTAMP.zip"
+          
+          echo "⏳ Initiating complete database dump sequence..."
+          
+          # Runs a custom compressed custom-format pg_dump binary stream
+          pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p 5432 -F c -b -v -f "$SQL_FILE"
+          
+          echo "✅ Database file generated successfully. Compressing file archive..."
+          zip "$ZIP_FILE" "$SQL_FILE"
+          
+          # Forward the file names down the GitHub Actions runtime environment pipeline
+          echo "ZIP_OUTPUT_NAME=$ZIP_FILE" >> $GITHUB_ENV
+
+      - name: Store Backup Archive securely on GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_OUTPUT_NAME }}
+          path: ${{ env.ZIP_OUTPUT_NAME }}
+          retention-days: 60 # 🛡️ Stores the zip file on GitHub for 60 days for free
