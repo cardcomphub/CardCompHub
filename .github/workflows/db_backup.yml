@@ -14,16 +14,28 @@ jobs:
       - name: Checkout Code Architecture
         uses: actions/checkout@v4
 
-      - name: Install Native PostgreSQL Client
+      - name: Install Native PostgreSQL Client v17
         run: |
+          echo "📦 Synchronizing official PostgreSQL repository keys..."
           sudo apt-get update
-          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y curl ca-certificates gnupg
+          
+          # Securely import the repository encryption signing key
+          sudo install -d /etc/apt/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg
+          
+          # Inject the official apt list mirror tracking architecture
+          echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          
+          # Fetch package trees and force-install matching v17 binaries
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
 
       - name: Execute pg_dump Engine
         env:
           PGPASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: "postgres.mjnzpmkzdtrdpwzpgvdo" # 🌟 FIXED: Updated to match your unique pooler user format
+          DB_USER: "postgres.mjnzpmkzdtrdpwzpgvdo"
           DB_NAME: "postgres"
         run: |
           # Create a clean, unique timestamp for the backup archive file name
@@ -33,7 +45,7 @@ jobs:
           
           echo "⏳ Initiating complete database dump sequence..."
           
-          # Runs a custom compressed custom-format pg_dump binary stream
+          # Runs a custom compressed custom-format pg_dump binary stream matching v17 server requirements
           pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p 5432 -F c -b -v -f "$SQL_FILE"
           
           echo "✅ Database file generated successfully. Compressing file archive..."
