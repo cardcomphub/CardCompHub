@@ -133,34 +133,41 @@ def fetch_ebay_via_proxy(search_query, player_name):
 def run_pipeline():
     print("🚀 Running data stream sync loop...")
     
-    # 🌟 1. SCHEMA UPDATE: Included 'last_updated' in the select parameters tree
+    # 🎯 HIGH PERFORMANCE CHECK: Isolate the current UTC date string (YYYY-MM-DD)
+    today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    
+    print(f"🔍 Checking 'price_comps' logs for existing updates processed today ({today_str})...")
+    
+    # Fetch only the variant IDs that have rows created today
+    today_comps_response = supabase.table("price_comps") \
+        .select("variant_id") \
+        .gte("created_at", f"{today_str}T00:00:00+00:00") \
+        .execute()
+        
+    # Convert list records into a rapid-lookup lookup set object
+    variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
+    print(f"ℹ️ Found {len(variants_updated_today)} variant variations already updated today.")
+
+    # Pull down master card indices safely without referencing non-existent columns
     response = supabase.table("base_cards").select(
-        "id, player_name, card_number, image_url, slug, last_updated, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
+        "id, player_name, card_number, image_url, slug, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
     ).execute()
     cards = response.data
-
-    # Isolate current calendar day key token in UTC formatting (YYYY-MM-DD)
-    today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     for card in cards:
         set_info = card['card_sets']
         variants = card['card_variants']
-        last_updated_raw = card.get('last_updated')
-
-        # 🌟 2. THE API DATE GATE: Skip extraction loops if a sweep already finished today
-        if last_updated_raw:
-            last_updated_date = last_updated_raw.split('T')[0]
-            if last_updated_date == today_str:
-                print(f"⏩ SKIP (#{card['card_number']}) was already swept today ({today_str}). Protecting API limits.")
-                continue
+        
+        # 🛡️ THE EXISTING COLUMN GATEWAY: Check if any variant of this card was updated today
+        card_variant_ids = {v['id'] for v in variants}
+        if card_variant_ids.intersection(variants_updated_today):
+            print(f"⏩ SKIP (#{card['card_number']}) matches existing comps created today. Skipping API query.")
+            continue
 
         search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {card['player_name']} #{card['card_number']}"
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
         
-        # If no comps are active right now, write back today's date anyway to stop infinite retries on the same day
         if not raw_comps:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            supabase.table("base_cards").update({"last_updated": now_iso}).eq("id", card["id"]).execute()
             continue
             
         if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
@@ -201,17 +208,11 @@ def run_pipeline():
 
         if price_entries:
             try:
+                # Post only top 10 rows straight into database
                 supabase.table("price_comps").insert(price_entries[:10]).execute()
                 print(f"📊 Successfully updated database with localized layout metrics rows for {card['player_name']}!")
             except Exception as db_write_error:
                 print(f"⚠️ Database write skipped dynamically for {card['player_name']}: {db_write_error}")
-
-        # 🌟 3. TIMESTAMP RECORD LOCK: Safely write back a completion log stamp to base_cards
-        try:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            supabase.table("base_cards").update({"last_updated": now_iso}).eq("id", card["id"]).execute()
-        except Exception as timestamp_error:
-            print(f"⚠️ Failed to update completion timestamp loop for {card['player_name']}: {timestamp_error}")
             
         time.sleep(1)
 
