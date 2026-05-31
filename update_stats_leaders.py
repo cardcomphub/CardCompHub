@@ -13,17 +13,24 @@ if not all([SUPABASE_URL, SUPABASE_KEY]):
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configurations mapping target sub-paths and required parameters
+# 📊 COMPLETE WORKING LEADERBOARD CONFIGURATIONS
 LEADERBOARD_TASKS = [
+    # 🏀 Basketball (NBA) Core Nodes
     {"sport": "basketball", "league": "nba", "category": None, "sort": "offensive.avgPoints:desc"},
     {"sport": "basketball", "league": "nba", "category": None, "sort": "offensive.avgAssists:desc"},
-    {"sport": "basketball", "league": "nba", "category": None, "sort": "defensive.avgRebounds:desc"},
+    {"sport": "basketball", "league": "nba", "category": None, "sort": "general.avgRebounds:desc"}, # Fixed to general path
+    
+    # 🏈 Football (NFL) Core Nodes
     {"sport": "football", "league": "nfl", "category": "offense:passing", "sort": "passing.passingYards:desc"},
+    {"sport": "football", "league": "nfl", "category": "offense:passing", "sort": "passing.passingTouchdowns:desc"}, # Explicit off-shoot split
     {"sport": "football", "league": "nfl", "category": "offense:rushing", "sort": "rushing.rushingYards:desc"},
+    {"sport": "football", "league": "nfl", "category": "offense:rushing", "sort": "rushing.rushingTouchdowns:desc"}, # Explicit off-shoot split
     {"sport": "football", "league": "nfl", "category": "offense:receiving", "sort": "receiving.receivingYards:desc"},
-    {"sport": "football", "league": "nfl", "category": "offense:scoring", "sort": "scoring.totalTouchdowns:desc"},
+    {"sport": "football", "league": "nfl", "category": "offense:receiving", "sort": "receiving.receivingTouchdowns:desc"}, # Explicit off-shoot split
+    
+    # ⚾ Baseball (MLB) Core Nodes
     {"sport": "baseball", "league": "mlb", "category": "batting", "sort": "batting.homeRuns:desc"},
-    {"sport": "baseball", "league": "mlb", "category": "batting", "sort": "batting.runsBattedIn:desc"},
+    {"sport": "baseball", "league": "mlb", "category": "batting", "sort": "batting.rbi:desc"}, # Shortened to database shorthand
     {"sport": "baseball", "league": "mlb", "category": "pitching", "sort": "pitching.strikeouts:desc"}
 ]
 
@@ -45,6 +52,12 @@ def fetch_top_five_leaders():
     leader_names = set()
     base_url = "https://site.web.api.espn.com/apis/common/v3/sports"
     
+    request_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    
     for task in LEADERBOARD_TASKS:
         url = f"{base_url}/{task['sport']}/{task['league']}/statistics/byathlete"
         
@@ -59,22 +72,19 @@ def fetch_top_five_leaders():
         if task["category"]:
             query_params["category"] = task["category"]
             
-        print(f"📡 Querying mapped {task['league'].upper()} data structures ({task['sort']})...")
         try:
-            response = requests.get(url, params=query_params, timeout=15)
+            response = requests.get(url, params=query_params, headers=request_headers, timeout=15)
             if response.status_code != 200:
-                print(f"⚠️ Query skipped with code {response.status_code} for: {task['league']}")
+                print(f"⚠️ Query skipped with code {response.status_code} for: {task['league']} ({task['sort']})")
                 continue
                 
             data = response.json()
             athletes_list = data.get("athletes", [])
             
-            # Isolate the top 5 sorted athlete records from the category array
             for entry in athletes_list[:5]:
                 athlete_info = entry.get("athlete", {})
                 name = athlete_info.get("displayName")
                 if name:
-                    # 🌟 NORMALIZATION STEP: Clean the incoming string before storing it in the set
                     leader_names.add(normalize_name(name))
                     
         except Exception as e:
@@ -85,7 +95,7 @@ def fetch_top_five_leaders():
 def sync_stats_to_supabase():
     print("🚀 Running Dynamic Stats Leadership Realignment Loop...")
     
-    # Run the fully qualified queries and compile clean names
+    # Run the queries and compile clean names
     elite_stat_leaders = fetch_top_five_leaders()
     print(f"📊 Processed {len(elite_stat_leaders)} total unique statistical benchmark leaders.")
     
@@ -99,7 +109,6 @@ def sync_stats_to_supabase():
     
     print("⏳ Synchronizing state switches inside your catalog...")
     for card in db_cards:
-        # 🌟 NORMALIZATION STEP: Clean your database name using the exact same algorithm
         clean_player_name = normalize_name(card["player_name"])
         
         # Match current name parameters to the dynamic sports results
