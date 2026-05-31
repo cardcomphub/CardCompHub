@@ -1,13 +1,13 @@
-name: Automated Daily Market & Stats Sweep
+name: Automated Daily Stats Sweep
 
 on:
   schedule:
-    # Automatically runs every day at 05:00 UTC (1:00 AM EST)
+    # 🕒 Automatically runs every day at 05:00 UTC (1:00 AM EST)
     - cron: '0 5 * * *'
-  workflow_dispatch: # Allows you to click a button and trigger an immediate run manually anytime
+  workflow_dispatch: # 🚀 Allows you to trigger a run manually anytime via the GitHub dashboard
 
 jobs:
-  data-sweep:
+  stats-sweep:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,21 +18,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # Speeds up runner boot times by caching your pip downloads
+          cache: 'pip'
 
-      - name: Install Network & Database Dependencies
+      - name: Install Database Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests supabase beautifulsoup4
+          pip install requests supabase
 
-      - name: Step 1 - Execute Market Price Scraper Floor Sweep
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
-        run: python update_comps.py
-
-      - name: Step 2 - Execute Dynamic ESPN Stats Leadership Alignment
+      - name: Execute Dynamic ESPN Stats Leadership Alignment
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
