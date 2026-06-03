@@ -80,25 +80,38 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
 
 def run_pipeline():
-    print("🌵 Starting TARGETED Cactus Jack Sync Pipeline...")
+    print("🌵 Starting PAGINATED Cactus Jack Sync Pipeline...")
 
-    # Pull the catalog records
-    response = supabase.table("base_cards").select(
-        "id, player_name, card_number, image_url, slug, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
-    ).limit(10000).execute()
+    raw_cards = []
+    start_row = 0
+    page_size = 1000
+
+    # 🚀 FIX: Loop query ranges to break past Supabase max_rows restrictions
+    while True:
+        print(f"🔄 Loading records {start_row} to {start_row + page_size}...")
+        response = supabase.table("base_cards").select(
+            "id, player_name, card_number, image_url, slug, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
+        ).range(start_row, start_row + page_size - 1).execute()
+        
+        page_data = response.data or []
+        raw_cards.extend(page_data)
+        
+        # If we get back fewer records than the page size, we've hit the absolute bottom of the table
+        if len(page_data) < page_size:
+            break
+            
+        start_row += page_size
     
-    raw_cards = response.data or []
-    
-    # 🎯 TARGETED FILTER: Keep ONLY entries belonging to the Cactus Jack set configuration
+    # 🎯 TARGETED FILTER: Isolate entries belonging to the Cactus Jack series run
     cards = [
         c for c in raw_cards 
         if c.get('card_sets') and 'cactus jack' in str(c['card_sets'].get('series', '')).lower()
     ]
     
-    print(f"📦 Isolated {len(cards)} Cactus Jack cards out of {len(raw_cards)} total database assets.")
+    print(f"📦 Successfully isolated {len(cards)} total Cactus Jack cards out of {len(raw_cards)} master rows fetched.")
 
     if not cards:
-        print("⚠️ No Cactus Jack cards matched the filter logic. Verify your database 'series' field text naming.")
+        print("⚠️ No Cactus Jack cards matched the filter logic.")
         return
 
     for card in cards:
@@ -110,7 +123,6 @@ def run_pipeline():
             variant_id = variant['id']
             variant_name = variant['variant_name']
 
-            # Build query specifically with the variant metrics appending
             if variant_name.lower() == 'base':
                 search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
             else:
@@ -134,7 +146,6 @@ def run_pipeline():
 
                 title_lower = comp['title'].lower()
 
-                # Filter junk tracking metrics out
                 if variant_name.lower() == 'base':
                     trash_keywords = ["lot", "bulk", "set of", "bundle", "complete set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one", "printing plate"]
                     if any(word in title_lower for word in trash_keywords):
