@@ -16,46 +16,9 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def find_matching_variant(title_lower, variants):
-    """Intelligently matches an eBay title to the correct database variant ID by breaking down keyword tokens."""
-    sorted_variants = sorted(variants, key=lambda x: 0 if x['variant_name'].lower() == 'base' else 1, reverse=True)
-    
-    for v in sorted_variants:
-        v_name = v['variant_name'].lower()
-        if v_name == 'base':
-            continue
-            
-        keyword_root = re.sub(r'\s*\(.*?\)', '', v_name).strip()
-        is_match = False
-        
-        if keyword_root in title_lower:
-            is_match = True
-        elif "stat line" in keyword_root and "stat" in title_lower:
-            is_match = True
-        elif "jersey number" in keyword_root and ("jersey" in title_lower or "patch" in title_lower or "serial" in title_lower):
-            is_match = True
-        elif "downtown" in keyword_root and "downtown" in title_lower:
-            is_match = True
-        elif "autograph" in keyword_root and ("auto" in title_lower or "sig" in title_lower or "ink" in title_lower or "signed" in title_lower):
-            is_match = True
-        elif "memorabilia" in keyword_root and ("jersey" in title_lower or "patch" in title_lower or "relic" in title_lower or "material" in title_lower):
-            is_match = True
-
-        serial_match = re.search(r'\(.*?\/(\d+)\)', v_name)
-        if is_match and serial_match:
-            serial_limit = serial_match.group(1)
-            if serial_limit not in title_lower and f"/{serial_limit}" not in title_lower:
-                is_match = False 
-
-        if is_match:
-            return v['id']
-            
-    base_var = next((v for v in variants if v['variant_name'].lower() == 'base'), None)
-    return base_var['id'] if base_var else None
-
 
 def fetch_ebay_via_proxy(search_query, player_name):
-    """Routes queries through proxy networks, extracting prices, true dates, and unique item listing images."""
+    """Routes explicit queries through proxy networks, extracting raw pricing metrics."""
     print(f"📡 Routing proxy query for: '{search_query}'...")
     
     encoded_query = search_query.replace(" ", "+")
@@ -64,7 +27,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
     proxy_params = {
         'api_key': SCRAPER_API_KEY,
         'url': ebay_url
-      }
+    }
     
     try:
         response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
@@ -131,90 +94,103 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
 
 def run_pipeline():
-    print("🚀 Running data stream sync loop...")
-    
-    # 🎯 HIGH PERFORMANCE CHECK: Isolate the current UTC date string (YYYY-MM-DD)
+    print("🚀 Running simplified target variant data stream sync...")
     today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
-    print(f"🔍 Checking 'price_comps' logs for existing updates processed today ({today_str})...")
-    
-    # Fetch only the variant IDs that have rows created today
+    # Track variants already updated today to optimize API call usage
     today_comps_response = supabase.table("price_comps") \
         .select("variant_id") \
         .gte("created_at", f"{today_str}T00:00:00+00:00") \
         .execute()
         
-    # Convert list records into a rapid-lookup lookup set object
     variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
-    print(f"ℹ️ Found {len(variants_updated_today)} variant variations already updated today.")
+    print(f"ℹ️ Found {len(variants_updated_today)} variants already updated today.")
 
-    # Pull down master card indices safely without referencing non-existent columns
+    # Fetch the card catalog using the 10,000 row safety extension limit
     response = supabase.table("base_cards").select(
         "id, player_name, card_number, image_url, slug, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
-    ).execute()
+    ).limit(10000).execute()
     cards = response.data
 
     for card in cards:
         set_info = card['card_sets']
         variants = card['card_variants']
-        
-        # 🛡️ THE EXISTING COLUMN GATEWAY: Check if any variant of this card was updated today
-        card_variant_ids = {v['id'] for v in variants}
-        if card_variant_ids.intersection(variants_updated_today):
-            print(f"⏩ SKIP (#{card['card_number']}) matches existing comps created today. Skipping API query.")
-            continue
+        clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
-        search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {card['player_name']} #{card['card_number']}"
-        raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
-        
-        if not raw_comps:
-            continue
+        # Loop through each individual variation of this card
+        for variant in variants:
+            variant_id = variant['id']
+            variant_name = variant['variant_name']
             
-        if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
-            supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
-
-        base_var = next((v for v in variants if v['variant_name'].lower() == 'base'), None)
-        base_variant_id = base_var['id'] if base_var else None
-
-        price_entries = []
-        for comp in raw_comps:
-            if comp['price'] > 10000:
+            # 🛡️ CACHE CHECK: Skip if this exact variant has already processed sales lines today
+            if variant_id in variants_updated_today:
+                print(f"⏩ SKIP: {clean_player_name} #{card['card_number']} ({variant_name}) already updated today.")
                 continue
 
-            title_lower = comp['title'].lower()
-            matched_variant_id = find_matching_variant(title_lower, variants)
+            # 🚀 BUILD EXPLICIT TARGET SEARCH STRING
+            # Format: Year + Brand + Series Set Name + Player Name + Card Number + Specific Variant Name
+            if variant_name.lower() == 'base':
+                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
+            else:
+                # Clean parenthetical notes from variants like "Cosmic (/49)" down to "Cosmic" for cleaner search syntax
+                clean_variant_string = re.sub(r'\(.*?\)', '', variant_name).strip()
+                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']} {clean_variant_string}"
+
+            # Query the target variant directly
+            raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
             
-            if matched_variant_id:
-                if matched_variant_id == base_variant_id:
-                    trash_keywords = [
-                        "lot", "bulk", "set of", "bundle", "complete set", 
-                        "auto", "signed", "autograph", "patch", "jersey", "relic",
-                        "1/1", "one of one", "printing plate"
-                    ]
+            if not raw_comps:
+                time.sleep(1)
+                continue
+                
+            # Update card placeholder image if empty
+            if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
+                supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
+                card['image_url'] = live_card_image 
+
+            price_entries = []
+            for comp in raw_comps:
+                if comp['price'] > 10000:
+                    continue
+
+                title_lower = comp['title'].lower()
+
+                # Basic baseline filters to keep junk data out of base charts
+                if variant_name.lower() == 'base':
+                    trash_keywords = ["lot", "bulk", "set of", "bundle", "complete set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one", "printing plate"]
                     if any(word in title_lower for word in trash_keywords):
                         continue
-                
+                else:
+                    # Guard: If searching for a specialized variant, make sure the text contains a relevant keyword token
+                    clean_token = re.sub(r'\(.*?\)', '', variant_name).lower().strip()
+                    if "autograph" in clean_token and not any(x in title_lower for x in ["auto", "sig", "ink", "signed", "autograph"]):
+                        continue
+                    elif "memorabilia" in clean_token and not any(x in title_lower for x in ["jersey", "patch", "relic", "material"]):
+                        continue
+                    elif clean_token not in title_lower and "autograph" not in clean_token and "memorabilia" not in clean_token:
+                        continue
+
                 grade = "Raw"
                 if "psa 10" in title_lower: grade = "PSA 10"
                 elif "psa 9" in title_lower: grade = "PSA 9"
                 
                 price_entries.append({
-                    "variant_id": matched_variant_id,
+                    "variant_id": variant_id,
                     "sale_price": comp['price'],
                     "sale_date": comp['date'],
                     "grade": grade,
                     "sale_image_url": comp['listing_image'] or card['image_url']
                 })
 
-        if price_entries:
-            try:
-                # Post only top 10 rows straight into database
-                supabase.table("price_comps").insert(price_entries[:10]).execute()
-                print(f"📊 Successfully updated database with localized layout metrics rows for {card['player_name']}!")
-            except Exception as db_write_error:
-                print(f"⚠️ Database write skipped dynamically for {card['player_name']}: {db_write_error}")
-            
-        time.sleep(1)
+            # Commit pricing details directly to the target variant record row
+            if price_entries:
+                try:
+                    supabase.table("price_comps").insert(price_entries[:10]).execute()
+                    print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name}) with new comps!")
+                except Exception as db_write_error:
+                    print(f"⚠️ Database write skipped: {db_write_error}")
+                
+            time.sleep(1)
 
 if __name__ == "__main__":
     run_pipeline()
