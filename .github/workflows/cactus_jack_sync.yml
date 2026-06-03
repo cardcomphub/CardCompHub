@@ -1,0 +1,31 @@
+name: Targeted Cactus Jack Price Sync
+
+on:
+  workflow_dispatch: # 🚀 Enables the manual one-click trigger button in GitHub UI
+  schedule:
+    - cron: '0 6 * * *' # Optional: Automatically runs daily at 6:00 AM UTC
+
+jobs:
+  sync-cactus-jack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code Repository Base
+        uses: actions/checkout@v4
+
+      - name: Post Initialize Runtime Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Ingestion Dependencies
+        run: |
+          pip install requests beautifulsoup4 supabase
+
+      - name: Execute Targeted Sync Script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+        run: python update_cactus_jack.py
