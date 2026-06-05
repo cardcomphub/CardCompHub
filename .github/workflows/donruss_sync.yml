@@ -1,9 +1,9 @@
 name: Dedicated Panini Donruss Market Sync
 
 on:
-  workflow_dispatch: # Allows you to run your massive Donruss checklists on-demand
+  workflow_dispatch: # Allows you to run your massive Donruss checklists on-demand whenever you want
   schedule:
-    - cron: '0 5 * * *' # Scheduled to run 2 hours after the main catalog sync
+    - cron: '0 5 * * 0' # 🚀 Changed to run once a week (Every Sunday at 5:00 AM UTC)
 
 jobs:
   generate-matrix:
