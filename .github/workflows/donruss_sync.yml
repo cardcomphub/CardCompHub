@@ -1,9 +1,9 @@
-name: Parallel Card Market Sync (Excluding Donruss)
+name: Dedicated Panini Donruss Market Sync
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows you to run your massive Donruss checklists on-demand
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 5 * * *' # Scheduled to run 2 hours after the main catalog sync
 
 jobs:
   generate-matrix:
@@ -45,21 +45,19 @@ jobs:
               brand_str = s['brand'].strip()
               series_str = s['series'].strip()
               
-              # 🛑 EXCLUSION FILTER: Skip standard Panini Donruss catalogs entirely
+              # 🎯 INCLUSION FILTER: Match ONLY standard Panini Donruss matrices
               if brand_str.lower() == 'panini' and series_str.lower() == 'donruss':
-                  continue
-                  
-              key_tuple = (year_str, brand_str, series_str)
-              if key_tuple not in seen:
-                  seen.add(key_tuple)
-                  unique_sets.append({
-                      'year': key_tuple[0],
-                      'brand': key_tuple[1],
-                      'series': key_tuple[2]
-                  })
+                  key_tuple = (year_str, brand_str, series_str)
+                  if key_tuple not in seen:
+                      seen.add(key_tuple)
+                      unique_sets.append({
+                          'year': key_tuple[0],
+                          'brand': key_tuple[1],
+                          'series': key_tuple[2]
+                      })
           
           matrix_data = {'include': unique_sets}
-          print(f'🚀 Generated dynamic matrix mapping for {len(unique_sets)} non-Donruss sets.')
+          print(f'🚀 Isolated {len(unique_sets)} base Panini Donruss processing targets.')
           
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'matrix={json.dumps(matrix_data)}\n')
@@ -69,11 +67,11 @@ jobs:
     needs: generate-matrix
     runs-on: ubuntu-latest
     strategy:
-      max-parallel: 4
+      max-parallel: 2 # 🛡️ Lower concurrency constraint since Donruss checklists are significantly longer
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
 
-    name: Sync (${{ matrix.year }} ${{ matrix.brand }} ${{ matrix.series }})
+    name: Sync Donruss (${{ matrix.year }} ${{ matrix.brand }} ${{ matrix.series }})
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
