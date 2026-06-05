@@ -1,4 +1,4 @@
-name: Parallel Card Market Sync (Excluding Donruss)
+name: Parallel Card Market Sync (Excluding Donruss & Topps Chrome)
 
 on:
   workflow_dispatch:
@@ -45,8 +45,13 @@ jobs:
               brand_str = s['brand'].strip()
               series_str = s['series'].strip()
               
-              # 🛑 EXCLUSION FILTER: Skip standard Panini Donruss catalogs entirely
+              # 🛑 EXCLUSION FILTERS
+              # 1. Skip standard Panini Donruss
               if brand_str.lower() == 'panini' and series_str.lower() == 'donruss':
+                  continue
+                  
+              # 2. Skip standard Topps Chrome (keeps 'Chrome x Cactus Jack' safe)
+              if brand_str.lower() == 'topps' and series_str.lower() == 'chrome':
                   continue
                   
               key_tuple = (year_str, brand_str, series_str)
@@ -59,7 +64,7 @@ jobs:
                   })
           
           matrix_data = {'include': unique_sets}
-          print(f'🚀 Generated dynamic matrix mapping for {len(unique_sets)} non-Donruss sets.')
+          print(f'🚀 Generated dynamic matrix mapping for {len(unique_sets)} filtered sets.')
           
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'matrix={json.dumps(matrix_data)}\n')
