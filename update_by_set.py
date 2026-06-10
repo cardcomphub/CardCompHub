@@ -3,6 +3,7 @@ import re
 import sys
 import asyncio
 import aiohttp
+import urllib.parse
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client, Client
@@ -23,11 +24,12 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 async def fetch_ebay_via_proxy(session, search_query, player_name):
     """Routes explicit queries through proxy networks concurrently."""
     print(f"📡 Routing proxy query for: '{search_query}'...")
-    encoded_query = search_query.replace(" ", "+")
+    
+    # 🛠️ THE FIX: Safely encode all special characters (#, &, /) so the URL doesn't break
+    encoded_query = urllib.parse.quote_plus(search_query)
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
     
     try:
-        # Replaced requests.get with aiohttp session.get
         async with session.get('http://api.scraperapi.com', params={'api_key': SCRAPER_API_KEY, 'url': ebay_url}, timeout=30) as response:
             if response.status != 200:
                 print(f"❌ Proxy node issue. Status code: {response.status}")
@@ -181,8 +183,7 @@ async def process_variant(session, sem, card, variant, set_info):
                 print(f"⚠️ Database write skipped: {db_write_error}")
         else:
             print(f"ℹ️ No valid comps found for {clean_player_name} ({variant_name}) after filtering.")
-            # If you WANT to lock out cards that genuinely have 0 valid sales on eBay so they aren't checked every single time,
-            # you can uncomment the lines below to update the timestamp here as well.
+            # Optional: Uncomment if you want to lock out variants with genuinely zero sales so they aren't checked every single time
             # await asyncio.to_thread(
             #     lambda: supabase.table("card_variants")
             #     .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
@@ -208,7 +209,7 @@ async def async_main():
     start_row = 0
     page_size = 1000
 
-    # 1. Fetch the target data payload synchronously (fast enough to do outside the async loop)
+    # 1. Fetch the target data payload synchronously
     while True:
         response = supabase.table("base_cards").select(
             "id, player_name, card_number, image_url, slug, card_sets!inner(year, brand, series), card_variants(id, variant_name, variant_category, last_scraped_at)"
@@ -233,7 +234,6 @@ async def async_main():
     tasks = []
     
     # 🚦 Semaphore limits the script to max 5 active outbound connections at a single time
-    # This prevents ScraperAPI from ratelimiting your account for DDoS-like behavior
     sem = asyncio.Semaphore(5) 
     
     # Use a single network session to cleanly manage all concurrent pipelines
@@ -242,7 +242,6 @@ async def async_main():
         for card in cards:
             set_info = card['card_sets']
             for variant in card['card_variants']:
-                # Queue up a concurrent task for every variant
                 task = process_variant(session, sem, card, variant, set_info)
                 tasks.append(task)
                 
