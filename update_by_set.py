@@ -23,14 +23,26 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ==========================================
 async def fetch_ebay_via_proxy(session, search_query, player_name):
     """Routes explicit queries through proxy networks concurrently."""
-    print(f"📡 Routing proxy query for: '{search_query}'...")
+    # Clean up double spaces from the search query
+    clean_query = re.sub(r'\s+', ' ', search_query).strip()
+    print(f"📡 Routing proxy query for: '{clean_query}'...")
     
-    # 🛠️ THE FIX: Safely encode all special characters (#, &, /) so the URL doesn't break
-    encoded_query = urllib.parse.quote_plus(search_query)
-    ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
+    # 1. Let Python safely build the eBay query string without double-encoding
+    ebay_params = {
+        "_nkw": clean_query,
+        "LH_Complete": "1",
+        "LH_Sold": "1"
+    }
+    ebay_query_string = urllib.parse.urlencode(ebay_params)
+    ebay_url = f"https://www.ebay.com/sch/i.html?{ebay_query_string}"
+    
+    # 2. Build the ScraperAPI URL as a strict string to prevent aiohttp from mangling the params
+    safe_ebay_url = urllib.parse.quote_plus(ebay_url)
+    scraper_url = f"http://api.scraperapi.com/?api_key={SCRAPER_API_KEY}&url={safe_ebay_url}"
     
     try:
-        async with session.get('http://api.scraperapi.com', params={'api_key': SCRAPER_API_KEY, 'url': ebay_url}, timeout=30) as response:
+        # 3. Fetch directly. Bumped timeout to 45s to give the proxy enough time to rotate IPs
+        async with session.get(scraper_url, timeout=45) as response:
             if response.status != 200:
                 print(f"❌ Proxy node issue. Status code: {response.status}")
                 return [], None
