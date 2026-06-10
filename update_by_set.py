@@ -226,10 +226,10 @@ async def async_main():
     
     # 🚦 Semaphore limits the script to max 15 active outbound connections at a single time
     # This prevents ScraperAPI from ratelimiting your account for DDoS-like behavior
-    sem = asyncio.Semaphore(15) 
+    sem = asyncio.Semaphore(5) 
     
     # Use a single network session to cleanly manage all 15 concurrent pipelines
-    connector = aiohttp.TCPConnector(limit=15)
+    connector = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=connector) as session:
         for card in cards:
             set_info = card['card_sets']
