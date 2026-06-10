@@ -17,29 +17,38 @@ async function getSupabaseClient() {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id?: string; slug?: string }> }
 ) {
   try {
     const resolvedParams = await params
-    const { id } = resolvedParams
+    // 🌟 FALLBACK: Captures either the string slug key or traditional UUID index parameter cleanly
+    const cardIdentifier = resolvedParams?.id || resolvedParams?.slug
+    
+    if (!cardIdentifier || cardIdentifier === 'undefined') {
+      return NextResponse.json({ trends: [] }, { status: 400 })
+    }
     
     const { searchParams } = new URL(request.url)
     const range = searchParams.get('range') || 'month' 
 
     const supabase = await getSupabaseClient()
 
-    // Fetch the raw nested records matching your working layout path
-    const { data: card, error } = await supabase
-      .from('base_cards')
-      .select(`
+    // 🌟 FLEXIBLE LOOKUP: Detects if the url param is an asset slug or database row ID token
+    let dbQuery = supabase.from('base_cards').select(`
+      id,
+      card_variants (
         id,
-        card_variants (
-          id,
-          price_comps (id, sale_price, sale_date)
-        )
-      `)
-      .eq('id', id)
-      .single()
+        price_comps (id, sale_price, sale_date)
+      )
+    `)
+
+    if (cardIdentifier.includes('-') && !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(cardIdentifier)) {
+      dbQuery = dbQuery.eq('slug', cardIdentifier)
+    } else {
+      dbQuery = dbQuery.eq('id', cardIdentifier)
+    }
+
+    const { data: card, error } = await dbQuery.single()
 
     if (error || !card) {
       return NextResponse.json({ trends: [] })
@@ -57,10 +66,9 @@ export async function GET(
     else if (range === 'year') startDate.setFullYear(now.getFullYear() - 1)
     else startDate.setDate(now.getDate() - 30)
 
-    // 🛠️ FIXED: Sanitize date string structure and filter records
+    // Sanitize date string structure and filter records
     const filteredComps = globalCompsList.filter((comp: any) => {
       if (!comp.sale_date) return false
-      // Replace the PostgreSQL space with a clean 'T' for bulletproof JS Date parsing
       const formattedDateStr = comp.sale_date.replace(' ', 'T')
       const saleDate = new Date(formattedDateStr)
       return saleDate.getTime() >= startDate.getTime()
@@ -76,27 +84,31 @@ export async function GET(
       range === 'year' ? { month: 'short' } : 
       { month: 'short', day: 'numeric' }
 
-    // 🛠️ FIXED: Roll up multiple sales on the same day into a single clean point average
-    const trendMap = new Map<string, { total: number; count: number }>()
+    // 🎯 RECONCILED SEGMENTATION: Keep tracking only the absolute lowest price point per day label
+    const trendMap = new Map<string, number>()
 
     filteredComps.forEach((comp: any) => {
       const dateObj = new Date(comp.sale_date.replace(' ', 'T'))
       const label = dateObj.toLocaleDateString('en-US', formatOptions)
       
-      const current = trendMap.get(label) || { total: 0, count: 0 }
-      trendMap.set(label, {
-        total: current.total + (Number(comp.sale_price) || 0),
-        count: current.count + 1
-      })
+      const currentPrice = Number(comp.sale_price) || 0
+      
+      if (currentPrice > 0) {
+        const existingLowestPrice = trendMap.get(label)
+        // If the day hasn't been added yet, or this sale is lower than what we recorded, overwrite it
+        if (existingLowestPrice === undefined || currentPrice < existingLowestPrice) {
+          trendMap.set(label, currentPrice)
+        }
+      }
     })
 
-    // Convert map to the clean object sequence format Recharts expects
-    const structuredTrends = Array.from(trendMap.entries()).map(([dateLabel, data]) => ({
+    // Convert map straight to the clean coordinate sequence payload Recharts expects
+    const structuredTrends = Array.from(trendMap.entries()).map(([dateLabel, lowestPrice]) => ({
       dateLabel,
-      price: Number((data.total / data.count).toFixed(2))
+      price: lowestPrice
     }))
 
-    console.log(`📈 Trends Pipeline: Processed ${structuredTrends.length} unique daily markers for chart canvas.`)
+    console.log(`📈 Floor Trends Pipeline: Processed ${structuredTrends.length} unique daily markers for chart canvas.`)
     return NextResponse.json({ trends: structuredTrends }, { status: 200 })
 
   } catch (error: any) {

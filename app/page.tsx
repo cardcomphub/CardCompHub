@@ -21,8 +21,8 @@ export default async function HomePage({
   const searchQuery = resolvedSearchParams?.q || ''
   const sportFilter = resolvedSearchParams?.sport || ''
 
-  // 1. Fetch the master card footprint with its relational parent set references cleanly
-  const { data: allCards, error } = await supabase
+  // 1. DYNAMIC SERVER-SIDE QUERY: Filter on the database level to prevent alphabetical truncation traps
+  let cardQuery = supabase
     .from('base_cards')
     .select(`
       id,
@@ -30,23 +30,25 @@ export default async function HomePage({
       player_name,
       is_rookie,
       image_url,
+      slug,
       card_sets (year, brand, series, sport)
-    `)
+    `);
+
+  // 🚀 THE SEARCH VISIBILITY FIX: Database handles the text match filter BEFORE the limit floor is enforced
+  if (searchQuery) {
+    cardQuery = cardQuery.ilike('player_name', `%${searchQuery}%`);
+  }
+
+  const { data: allCards, error } = await cardQuery
     .order('player_name', { ascending: true })
+    .limit(5000);
 
   if (error) {
     console.error('Error loading master index checklist data:', error)
   }
 
-  // 2. IN-MEMORY FILTERING PIPELINE: 100% bulletproof casing and relationship processing
+  // 2. IN-MEMORY FILTERING PIPELINE: Handles remaining contextual sports filters cleanly
   let filteredCards = allCards || []
-
-  // Apply case-insensitive text search matching
-  if (searchQuery) {
-    filteredCards = filteredCards.filter((card) => 
-      card.player_name?.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  }
 
   // Apply case-insensitive sport filtering matching
   if (sportFilter) {
@@ -56,10 +58,17 @@ export default async function HomePage({
     })
   }
 
-  // --- PROGRAMMATIC DASHBOARD MAP GENERATION ---
-  const totalCardFootprint = filteredCards.length
+  // --- PROGRAMMATIC DASHBOARD MAP GENERATION WITH DEDUPLICATION ---
   const sportsMap: Record<string, any[]> = {}
   const brandsSet = new Set<string>()
+
+  // Count occurrences within the active query footprint snapshot
+  const playerGlobalCounts: Record<string, number> = {}
+  allCards?.forEach((card) => {
+    if (card.player_name) {
+      playerGlobalCounts[card.player_name] = (playerGlobalCounts[card.player_name] || 0) + 1
+    }
+  })
 
   filteredCards.forEach((card) => {
     const setInfo = Array.isArray(card.card_sets) ? card.card_sets[0] : card.card_sets;
@@ -67,8 +76,20 @@ export default async function HomePage({
     if (setInfo?.brand) brandsSet.add(setInfo.brand);
 
     if (!sportsMap[sport]) sportsMap[sport] = [];
-    sportsMap[sport].push({ ...card, setInfo });
+    
+    const alreadyExists = sportsMap[sport].some((c) => c.player_name === card.player_name);
+    if (!alreadyExists) {
+      sportsMap[sport].push({ 
+        ...card, 
+        setInfo,
+        total_set_count: playerGlobalCounts[card.player_name || ''] || 1
+      });
+    }
   });
+
+  let visualRowCount = 0
+  Object.values(sportsMap).forEach((arr) => { visualRowCount += arr.length })
+  const totalCardFootprint = visualRowCount
 
   return (
     <main className="bg-slate-950 text-slate-100 selection:bg-emerald-500 selection:text-slate-950 pb-20">
@@ -122,7 +143,7 @@ export default async function HomePage({
           {/* Quick Metrics Widget Panel */}
           <div className="grid grid-cols-3 gap-4 w-full lg:max-w-md font-mono bg-slate-900/40 border border-slate-900 p-5 rounded-2xl shadow-xl h-fit">
             <div className="border-r border-slate-800/60 p-1">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Matches</p>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Players</p>
               <p className="text-xl font-black text-white mt-1">{totalCardFootprint}</p>
             </div>
             <div className="border-r border-slate-800/60 p-1 pl-3">
@@ -169,7 +190,7 @@ export default async function HomePage({
                 >
                   <div>
                     <h3 className="font-bold text-slate-300 group-hover:text-blue-400 text-xs transition-colors">{sport} Hub</h3>
-                    <p className="text-[10px] text-slate-500 font-mono mt-0.5 uppercase tracking-wider">{sportsMap[sport].length} Matches</p>
+                    <p className="text-[10px] text-slate-500 font-mono mt-0.5 uppercase tracking-wider">{sportsMap[sport].length} Players</p>
                   </div>
                   <span className="text-slate-700 group-hover:text-slate-400 font-mono text-xs transition-colors">&rarr;</span>
                 </Link>
@@ -198,7 +219,7 @@ export default async function HomePage({
                   <div key={sport} className="bg-slate-900/10 border border-slate-900 rounded-2xl p-5">
                     <h3 className="text-sm font-bold text-white mb-3 font-mono tracking-wider uppercase border-b border-slate-900/80 pb-2 flex items-center justify-between">
                       <span>{sport} Database</span>
-                      <span className="text-xxs text-slate-500 normal-case font-normal">({sportCards.length} matching entries)</span>
+                      <span className="text-xxs text-slate-500 normal-case font-normal">({sportCards.length} matching profiles)</span>
                     </h3>
 
                     <div className="overflow-x-auto border border-slate-900 rounded-xl bg-slate-950/40">
@@ -217,19 +238,32 @@ export default async function HomePage({
                             <tr key={card.id} className="hover:bg-slate-900/30 transition-colors group">
                               <td className="py-2.5 px-4 font-bold text-slate-600">#{card.card_number || 'N/A'}</td>
                               <td className="py-2.5 px-4 font-sans font-bold text-slate-200">
-                                <Link href={`/cards/${card.id}`} className="hover:text-emerald-400 transition-colors flex items-center gap-1.5">
-                                  {card.player_name}
-                                  {card.is_rookie && <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[8px] px-1 rounded font-black">RC</span>}
-                                </Link>
+                                <div className="flex items-center gap-2">
+                                  <Link href={`/cards/${card.slug}`} className="hover:text-emerald-400 transition-colors flex items-center gap-1.5">
+                                    {card.player_name}
+                                    {card.is_rookie && <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[8px] px-1 rounded font-black">RC</span>}
+                                  </Link>
+                                  {card.total_set_count > 1 && (
+                                    <span className="inline-flex items-center rounded bg-blue-500/10 px-1.5 py-0.5 text-[8px] font-bold text-blue-400 border border-blue-500/20 font-mono tracking-wide uppercase">
+                                      {card.total_set_count} Sets Tracked
+                                    </span>
+                                  )}
+                                </div>
                               </td>
-                              <td className="py-2.5 px-4 text-slate-400">{card.setInfo?.year} {card.setInfo?.series}</td>
+                              <td className="py-2.5 px-4 text-slate-400">
+                                {card.total_set_count > 1 ? (
+                                  <span className="text-slate-500 italic">Multi-Set Catalog</span>
+                                ) : (
+                                  `${card.setInfo?.year} ${card.setInfo?.series}`
+                                )}
+                              </td>
                               <td className="py-2.5 px-4">
                                 <span className="bg-slate-950 px-1.5 py-0.5 rounded border border-slate-900 text-slate-400 text-[9px] font-bold">
-                                  {card.setInfo?.brand}
+                                  {card.total_set_count > 1 ? "Various" : card.setInfo?.brand}
                                 </span>
                               </td>
                               <td className="py-2.5 px-4 text-right">
-                                <Link href={`/cards/${card.id}`} className="text-emerald-500 hover:text-emerald-400 font-bold uppercase tracking-wider text-[9px]">
+                                <Link href={`/cards/${card.slug}`} className="text-emerald-500 hover:text-emerald-400 font-bold uppercase tracking-wider text-[9px]">
                                   View Comps &rarr;
                                 </Link>
                               </td>

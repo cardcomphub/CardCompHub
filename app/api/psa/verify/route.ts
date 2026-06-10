@@ -17,12 +17,18 @@ async function getSupabaseClient() {
   return createClient(url, secretKey)
 }
 
+const parsePsaNumeric = (val: any): number => {
+  if (val === undefined || val === null) return 0
+  if (typeof val === 'number') return val
+  const cleaned = String(val).replace(/[^0-9.]/g, '')
+  const parsed = parseFloat(cleaned)
+  return isNaN(parsed) ? 0 : parsed
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { certNumber } = body
-
-    console.log(`\n=== 🔎 NEW LOCAL LOOKUP REQUEST: Cert #${certNumber} ===`)
 
     if (!certNumber) {
       return NextResponse.json({ error: "Missing required certNumber parameter." }, { status: 400 })
@@ -32,26 +38,21 @@ export async function POST(request: NextRequest) {
     const token = process.env.PSA_API_TOKEN
 
     if (!token) {
-      console.error("❌ LOCAL ERROR: PSA_API_TOKEN is completely undefined inside your .env.local file!")
       return NextResponse.json({ error: "Server API token unassigned locally." }, { status: 500 })
     }
 
     // 1. Core Profile Metadata Fetch
-    console.log(`📡 Fetching core profile metadata from PSA for #${cleanCert}...`)
     const metaResponse = await fetch(`${PSA_API_BASE}/cert/GetByCertNumber/${cleanCert}`, {
       method: "GET",
       headers: { "Authorization": `bearer ${token}`, "Accept": "application/json" }
     })
 
     if (!metaResponse.ok) {
-      const errText = await metaResponse.text()
-      console.error(`❌ PSA Meta API Rejected Request: ${errText}`)
       return NextResponse.json({ error: "PSA verification lookup failed." }, { status: metaResponse.status })
     }
 
     const metaPayload = await metaResponse.json()
     if (metaPayload?.IsValidRequest === false || !metaPayload?.PSACert) {
-      console.warn(`⚠️ PSA Registry stated this certificate number is invalid or not found.`)
       return NextResponse.json({ error: "Certification serial code not found." }, { status: 404 })
     }
 
@@ -60,11 +61,18 @@ export async function POST(request: NextRequest) {
     const parsedYear = certDetails.Year ? parseInt(certDetails.Year) : null
     const parsedBrand = certDetails.Brand?.trim() || "Unknown Set"
     const parsedGrade = certDetails.CardGrade?.trim() || "RAW"
+    const parsedCardNumber = certDetails.CardNumber?.trim() || null
+    const parsedCategory = certDetails.Category?.trim() || null
+    const parsedLabelType = certDetails.LabelType?.trim() || certDetails.LabelText?.trim() || null
 
-    console.log(`✅ Found Card: ${parsedYear} ${parsedBrand} ${parsedPlayer} (Grade: ${parsedGrade})`)
+    const parsedReverseBarcode = certDetails.ReverseBarCode === true || 
+                                 certDetails.ReverseBarCode === 'true' || 
+                                 certDetails.ReverseBarcode === true
 
-    // 2. High-Res Slab Scans Image Fetch
-    console.log(`📸 Querying secure image array for slab graphics...`)
+    const parsedPopCount = Math.floor(parsePsaNumeric(certDetails.TotalPopulation ?? certDetails.Population ?? 0))
+    const parsedPopHigher = Math.floor(parsePsaNumeric(certDetails.PopulationHigher ?? certDetails.PopHigher ?? 0))
+
+    // 2. High-Res Slab Scans Image Fetch (Running independently now)
     let certImageFront: string | null = null
     let certImageBack: string | null = null
 
@@ -75,28 +83,18 @@ export async function POST(request: NextRequest) {
 
     if (imageResponse.ok) {
       const imagesList = await imageResponse.json()
-      
-      console.log(`📦 Number of raw image objects returned by PSA: ${imagesList.length}`)
-
       if (Array.isArray(imagesList) && imagesList.length > 0) {
-        // 🛠️ FIXED: Target the exact structural keys returned by the PSA API payload
         const frontMatch = imagesList.find(img => img?.IsFrontImage === true || img?.IsFrontImage === 'true')
         const backMatch = imagesList.find(img => img?.IsFrontImage === false || img?.IsFrontImage === 'false')
 
         certImageFront = frontMatch?.ImageURL || null
         certImageBack = backMatch?.ImageURL || null
-        
-        console.log(`🖼️ Extracted Front URL: ${certImageFront}`)
-        console.log(`🖼️ Extracted Back URL: ${certImageBack}`)
       }
-    } else {
-      console.error(`❌ Failed to fetch image array from PSA. Status code: ${imageResponse.status}`)
     }
 
-    // 3. Sync Cache indices to Supabase
-    console.log(`💾 Syncing cache entry records to Supabase table index...`)
+    // 3. Sync Cache indices to Supabase (Logging the scan)
     const supabase = await getSupabaseClient()
-    const { error: dbError } = await supabase
+    await supabase
       .from('psa_cert_verifications')
       .upsert({
         cert_number: cleanCert,
@@ -104,32 +102,42 @@ export async function POST(request: NextRequest) {
         card_year: parsedYear,
         card_brand: parsedBrand,
         card_grade: parsedGrade,
+        pop_count: parsedPopCount,
+        pop_higher: parsedPopHigher,
+        label_type: parsedLabelType,
+        reverse_barcode_exists: parsedReverseBarcode,
+        card_number: parsedCardNumber,
+        category: parsedCategory,
         cert_image_front: certImageFront,
         cert_image_back: certImageBack,
+        slab_image_front: certImageFront,
+        slab_image_back: certImageBack,
         updated_at: new Date().toISOString()
       }, { onConflict: 'cert_number' })
 
-    if (dbError) {
-      console.error("❌ SUPABASE WRITE ERROR:", dbError)
-    } else {
-      console.log("🚀 Supabase cache write successful!")
-    }
-
     return NextResponse.json({
       success: true,
+      source: 'live_psa_api',
       data: {
         cert_number: cleanCert,
         player_name: parsedPlayer,
         card_year: parsedYear,
         card_brand: parsedBrand,
         card_grade: parsedGrade,
+        card_number: parsedCardNumber,
+        category: parsedCategory,
+        label_type: parsedLabelType,
+        reverse_barcode_exists: parsedReverseBarcode,
+        pop_count: parsedPopCount,
+        pop_higher: parsedPopHigher,
         cert_image_front: certImageFront,
-        cert_image_back: certImageBack
+        cert_image_back: certImageBack,
+        slab_image_front: certImageFront,
+        slab_image_back: certImageBack
       }
     }, { status: 200 })
 
   } catch (globalError: any) {
-    console.error("🚨 GLOBAL HANDLER CRASH:", globalError)
     return NextResponse.json({ error: globalError.message }, { status: 500 })
   }
 }

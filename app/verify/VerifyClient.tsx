@@ -1,28 +1,52 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 interface CertData {
+  cert_number: string
   player_name: string
   card_year: number | null
   card_brand: string
   card_grade: string
+  card_number: string | null
+  category: string | null
+  label_type: string | null
+  reverse_barcode_exists: boolean
+  pop_count: number
+  pop_higher: number
   cert_image_front: string | null
   cert_image_back: string | null
-  is_valid_slab: boolean
+  slab_image_front: string | null
+  slab_image_back: string | null
 }
 
 interface ApiResponse {
-  source: 'database_cache' | 'live_psa_api'
+  success: boolean
+  source?: 'database_cache' | 'live_psa_api'
   data: CertData
-  debugRaw?: any
 }
 
-export default function VerifyClient() {
-  const [certNumber, setCertNumber] = useState('')
+interface VerifyClientProps {
+  initialServerData?: CertData | null
+  requestedCertQuery?: string
+}
+
+export default function VerifyClient({ initialServerData, requestedCertQuery = '' }: VerifyClientProps) {
+  const [certNumber, setCertNumber] = useState(requestedCertQuery)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<ApiResponse | null>(null)
+  
+  const [result, setResult] = useState<ApiResponse | null>(() => {
+    if (initialServerData) {
+      return { success: true, source: 'database_cache', data: initialServerData }
+    }
+    return null
+  })
+
+  useEffect(() => {
+    if (requestedCertQuery) setCertNumber(requestedCertQuery)
+    if (initialServerData) setResult({ success: true, source: 'database_cache', data: initialServerData })
+  }, [requestedCertQuery, initialServerData])
 
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -53,10 +77,32 @@ export default function VerifyClient() {
     }
   }
 
+ // Helper to generate a Modern EPN Affiliate eBay Link
+  const generateEbayAffiliateLink = (data: CertData) => {
+    // 1. Build the specific search query (e.g., "2023 Panini Prizm Anthony Edwards PSA 10")
+    const yearStr = data.card_year ? `${data.card_year} ` : ''
+    const searchQuery = `${yearStr}${data.card_brand} ${data.player_name} PSA ${data.card_grade}`
+    const encodedQuery = encodeURIComponent(searchQuery)
+
+    // 2. Construct standard eBay search URL for sold listings
+    const baseEbaySearch = `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Complete=1&LH_Sold=1`
+
+    // 3. Modern EPN Tracking Parameters
+    // Replace YOUR_EPN_CAMPAIGN_ID with your actual 10-digit Campaign ID
+    const campaignId = 'YOUR_EPN_CAMPAIGN_ID' 
+    const customId = 'slab_authenticator'
+
+    // 4. Append tracking tags directly to the destination URL
+    return `${baseEbaySearch}&mkcid=1&mkrid=711-53200-19255-0&siteid=0&campid=${campaignId}&customid=${customId}&toolid=10001&mkevt=1`
+  }
+  const frontImg = result?.data?.slab_image_front || result?.data?.cert_image_front
+  const backImg = result?.data?.slab_image_back || result?.data?.cert_image_back
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center py-12 px-4">
-      <div className="w-full max-w-3xl">
+      <div className="w-full max-w-4xl">
         
+        {/* Title Frame Banner */}
         <div className="text-center mb-10">
           <h1 className="text-3xl font-black tracking-tight text-white sm:text-4xl mb-3">
             Slab Authenticator
@@ -66,11 +112,12 @@ export default function VerifyClient() {
           </p>
         </div>
 
+        {/* Form Container */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl mb-8">
           <form onSubmit={handleVerify} className="flex flex-col sm:flex-row gap-3">
             <input
               type="text"
-              placeholder="Enter 8-Digit PSA Cert Number (e.g., 69701173)"
+              placeholder="Enter 8-Digit PSA Cert Number (e.g., 100394399)"
               value={certNumber}
               onChange={(e) => setCertNumber(e.target.value)}
               disabled={loading}
@@ -96,66 +143,130 @@ export default function VerifyClient() {
           )}
         </div>
 
+        {/* 📊 CORE RESULTS PANEL */}
         {result && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
-            <div className="flex flex-wrap justify-between items-center border-b border-slate-800 pb-4 mb-6 gap-2">
+          <div className="space-y-6">
+            
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap justify-between items-center shadow-2xl gap-2">
               <div className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                <h2 className="font-bold text-lg text-white">PSA Verified Authentic</h2>
+                <h2 className="font-bold text-base text-white">Official PSA Registry Record Confirmed</h2>
               </div>
               <span className="text-[10px] uppercase font-mono tracking-wider px-2 py-1 bg-slate-950 border border-slate-800 rounded text-slate-400">
-                Source: {result.source === 'database_cache' ? 'Supabase Cache' : 'Live PSA API'}
+                Index Track: {result.source === 'live_psa_api' ? 'Live API Sync' : 'System Cache Grid'}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase font-mono">Player / Item</label>
-                  <p className="text-xl font-extrabold text-white mt-0.5">{result.data.player_name}</p>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs font-bold text-slate-500 uppercase font-mono">Year</label>
-                    <p className="text-base font-semibold text-slate-200 mt-0.5">{result.data.card_year || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <label className="text-xs font-bold text-slate-500 uppercase font-mono">Official Grade</label>
-                    <p className="text-base font-black text-emerald-400 mt-0.5 font-mono">{result.data.card_grade}</p>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase font-mono">Brand / Set Identity</label>
-                  <p className="text-sm font-medium text-slate-300 mt-0.5">{result.data.card_brand}</p>
-                </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl text-center shadow">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">Item Grade</span>
+                <p className="text-base font-black text-emerald-400 mt-1 font-mono truncate">{result.data.card_grade}</p>
+              </div>
+              
+              <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl text-center shadow">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">PSA Population</span>
+                <p className="text-base font-black text-white mt-1 font-mono">
+                  {result.data.pop_count !== null ? result.data.pop_count.toLocaleString() : 'N/A'}
+                </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 text-center font-mono">Slab Front</label>
-                  {result.data.cert_image_front ? (
-                    <img src={result.data.cert_image_front} alt="PSA Slab Front" className="rounded-xl border border-slate-800 max-h-60 mx-auto object-contain bg-slate-950 p-1 shadow-lg" />
-                  ) : (
-                    <div className="h-40 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-center text-xs text-slate-600 italic">No Scan Provided</div>
-                  )}
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 text-center font-mono">Slab Back</label>
-                  {result.data.cert_image_back ? (
-                    <img src={result.data.cert_image_back} alt="PSA Slab Back" className="rounded-xl border border-slate-800 max-h-60 mx-auto object-contain bg-slate-950 p-1 shadow-lg" />
-                  ) : (
-                    <div className="h-40 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-center text-xs text-slate-600 italic">No Scan Provided</div>
-                  )}
-                </div>
+              <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl text-center shadow">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">PSA Pop Higher</span>
+                <p className="text-base font-black text-slate-300 mt-1 font-mono">
+                  {result.data.pop_higher !== null ? result.data.pop_higher.toLocaleString() : '0'}
+                </p>
               </div>
 
-              {result.debugRaw && (
-                <div className="mt-8 pt-6 border-t border-slate-800 w-full md:col-span-2">
-                  <label className="text-xs font-bold text-amber-500 uppercase font-mono block mb-2">🔴 Live API Debugger: Raw Payload From PSA</label>
-                  <pre className="bg-slate-950 p-4 rounded-xl text-xs text-emerald-400 overflow-x-auto max-h-96 font-mono border border-slate-800">{JSON.stringify(result.debugRaw, null, 2)}</pre>
-                </div>
-              )}
+              {/* 🛒 NEW: Affiliate Action Button Block */}
+              <div className="bg-blue-600/10 border border-blue-500/30 p-3 rounded-xl flex items-center justify-center shadow hover:bg-blue-600/20 transition-colors">
+                <a 
+                  href={generateEbayAffiliateLink(result.data)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex flex-col items-center justify-center w-full h-full cursor-pointer"
+                >
+                  <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider font-mono mb-1">Market Value</span>
+                  <p className="text-sm font-black text-white flex items-center gap-1.5">
+                    Search eBay
+                    <svg className="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </p>
+                </a>
+              </div>
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
+              <div className="md:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4">
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider border-b border-slate-800 pb-2">Item Information</h3>
+                
+                <div className="divide-y divide-slate-800/60 font-mono text-xs">
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Cert Number</span>
+                    <span className="text-white font-bold select-all text-sm">{result.data.cert_number || certNumber}</span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Label Type</span>
+                    <span className="text-slate-300 text-right font-medium max-w-[240px] truncate-2-lines">{result.data.label_type || 'Standard Label Variant'}</span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Reverse Barcode</span>
+                    <span className={`font-bold uppercase ${result.data.reverse_barcode_exists ? 'text-emerald-400' : 'text-slate-500'}`}>
+                      {result.data.reverse_barcode_exists ? 'YES' : 'NO'}
+                    </span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Year</span>
+                    <span className="text-slate-200 font-bold">{result.data.card_year || 'N/A'}</span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Brand / Title</span>
+                    <span className="text-slate-200 text-right font-bold max-w-[220px] truncate">{result.data.card_brand}</span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Subject</span>
+                    <span className="text-white font-black max-w-[220px] truncate text-right">{result.data.player_name}</span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Card Number</span>
+                    <span className="text-slate-200 font-bold">#{result.data.card_number || 'N/A'}</span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center gap-4">
+                    <span className="text-slate-500 uppercase font-bold">Category</span>
+                    <span className="text-slate-400 uppercase tracking-wide text-[11px] font-bold">{result.data.category || 'Trading Cards'}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="md:col-span-5 grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-2">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase text-center font-mono tracking-wider">Slab Front Photo</span>
+                  {frontImg ? (
+                    <img 
+                      src={frontImg} 
+                      alt="PSA Certificate Slab Front Photography View" 
+                      className="rounded-xl border border-slate-800 w-full object-contain bg-slate-950 p-1 shadow-2xl hover:scale-[1.02] transition-transform duration-200" 
+                    />
+                  ) : (
+                    <div className="h-48 rounded-xl border border-slate-900 bg-slate-950/40 flex items-center justify-center text-[10px] text-slate-700 font-mono italic">Front Scan Not Provided</div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase text-center font-mono tracking-wider">Slab Back Photo</span>
+                  {backImg ? (
+                    <img 
+                      src={backImg} 
+                      alt="PSA Certificate Slab Reverse Photography View" 
+                      className="rounded-xl border border-slate-800 w-full object-contain bg-slate-950 p-1 shadow-2xl hover:scale-[1.02] transition-transform duration-200" 
+                    />
+                  ) : (
+                    <div className="h-48 rounded-xl border border-slate-900 bg-slate-950/40 flex items-center justify-center text-[10px] text-slate-700 font-mono italic">Back Scan Not Provided</div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+
           </div>
         )}
       </div>
