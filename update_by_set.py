@@ -115,18 +115,9 @@ async def process_variant(session, sem, card, variant, set_info):
         # Fetch pricing data asynchronously
         raw_comps, live_card_image = await fetch_ebay_via_proxy(session, search_term, card['player_name'])
         
-        # ⏳ TIMESTAMP REFRESH: Supabase operations are inherently synchronous in Python. 
-        # We wrap them in asyncio.to_thread() so they run in the background and don't freeze our other concurrent requests!
-        try:
-            await asyncio.to_thread(
-                lambda: supabase.table("card_variants")
-                .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
-                .eq("id", variant_id).execute()
-            )
-        except Exception as ts_error:
-            print(f"⚠️ Timestamp update skipped: {ts_error}")
-
+        # 1. IMMEDIATE BAIL-OUT: If the proxy failed, exit BEFORE updating the timestamp
         if not raw_comps:
+            print(f"⚠️ Proxy failed for {clean_player_name} ({variant_name}). Skipping timestamp update to allow retry.")
             return
             
         # Optional Image Update
@@ -171,15 +162,32 @@ async def process_variant(session, sem, card, variant, set_info):
                 "sale_image_url": comp['listing_image'] or card['image_url']
             })
 
-        # Final Insert Push
+        # Final Insert Push & Timestamp Update
         if price_entries:
             try:
+                # 2. Update prices
                 await asyncio.to_thread(
                     lambda: supabase.table("price_comps").insert(price_entries[:10]).execute()
+                )
+                
+                # 3. ONLY update the timestamp if we successfully pushed new data
+                await asyncio.to_thread(
+                    lambda: supabase.table("card_variants")
+                    .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
+                    .eq("id", variant_id).execute()
                 )
                 print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name})!")
             except Exception as db_write_error:
                 print(f"⚠️ Database write skipped: {db_write_error}")
+        else:
+            print(f"ℹ️ No valid comps found for {clean_player_name} ({variant_name}) after filtering.")
+            # If you WANT to lock out cards that genuinely have 0 valid sales on eBay so they aren't checked every single time,
+            # you can uncomment the lines below to update the timestamp here as well.
+            # await asyncio.to_thread(
+            #     lambda: supabase.table("card_variants")
+            #     .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
+            #     .eq("id", variant_id).execute()
+            # )
 
 
 # ==========================================
@@ -224,11 +232,11 @@ async def async_main():
     # 2. Build our Concurrent Task List
     tasks = []
     
-    # 🚦 Semaphore limits the script to max 15 active outbound connections at a single time
+    # 🚦 Semaphore limits the script to max 5 active outbound connections at a single time
     # This prevents ScraperAPI from ratelimiting your account for DDoS-like behavior
     sem = asyncio.Semaphore(5) 
     
-    # Use a single network session to cleanly manage all 15 concurrent pipelines
+    # Use a single network session to cleanly manage all concurrent pipelines
     connector = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=connector) as session:
         for card in cards:
