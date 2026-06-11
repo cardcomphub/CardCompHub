@@ -3,7 +3,6 @@ import re
 import sys
 import asyncio
 import aiohttp
-import urllib.parse
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client, Client
@@ -18,39 +17,45 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+
 # ==========================================
-# 1. ASYNCHRONOUS NETWORK FETCHER
+# 1. ASYNCHRONOUS NETWORK FETCHER (WITH X-RAY LOGGING)
 # ==========================================
 async def fetch_ebay_via_proxy(session, search_query, player_name):
     """Routes explicit queries through proxy networks concurrently."""
-    # Clean up double spaces from the search query
     clean_query = re.sub(r'\s+', ' ', search_query).strip()
+    # Manually format unsafe characters to protect URL formation without double-encoding strings
+    safe_query = clean_query.replace(" ", "+").replace("#", "%23").replace("&", "%26")
+    
     print(f"📡 Routing proxy query for: '{clean_query}'...")
+    ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={safe_query}&LH_Complete=1&LH_Sold=1"
     
-    # 1. Let Python safely build the eBay query string without double-encoding
-    ebay_params = {
-        "_nkw": clean_query,
-        "LH_Complete": "1",
-        "LH_Sold": "1"
+    scraper_params = {
+        "api_key": SCRAPER_API_KEY,
+        "url": ebay_url,
+        "render": "true"  # Forces ScraperAPI to use a headless browser to bypass strict anti-bot walls
     }
-    ebay_query_string = urllib.parse.urlencode(ebay_params)
-    ebay_url = f"https://www.ebay.com/sch/i.html?{ebay_query_string}"
-    
-    # 2. Build the ScraperAPI URL as a strict string to prevent aiohttp from mangling the params
-    safe_ebay_url = urllib.parse.quote_plus(ebay_url)
-    scraper_url = f"http://api.scraperapi.com/?api_key={SCRAPER_API_KEY}&url={safe_ebay_url}"
     
     try:
-        # 3. Fetch directly. Bumped timeout to 45s to give the proxy enough time to rotate IPs
-        async with session.get(scraper_url, timeout=45) as response:
+        async with session.get('http://api.scraperapi.com/', params=scraper_params, timeout=45) as response:
             if response.status != 200:
-                print(f"❌ Proxy node issue. Status code: {response.status}")
-                return [], None
+                print(f"❌ [HTTP ERROR] Status code: {response.status} for query: {clean_query}")
+                return None, None
             
-            # await the text response without blocking the thread
             html = await response.text()
             soup = BeautifulSoup(html, 'html.parser')
+            
+            # --- 🛑 X-RAY DEBUG LOGGING START 🛑 ---
+            page_title = soup.title.string.strip() if soup.title else "NO TITLE FOUND"
             listings = soup.find_all(class_=lambda x: x and ('s-item' in x or 's-card' in x))
+            
+            print(f"🔍 [DEBUG] '{clean_query}' | Page Title: {page_title} | HTML Size: {len(html)} bytes | Listings Found: {len(listings)}")
+            
+            if len(listings) == 0:
+                # Extract clean page context to check if we loaded a CAPTCHA/human verification page
+                page_text = soup.get_text(separator=' ', strip=True)[:250]
+                print(f"🚨 [WARNING] 0 LISTINGS HTML SNIPPET: {page_text}...")
+            # --- 🛑 X-RAY DEBUG LOGGING END 🛑 ---
             
             parsed_comps = []
             first_discovered_image = None
@@ -96,8 +101,8 @@ async def fetch_ebay_via_proxy(session, search_query, player_name):
             return parsed_comps, first_discovered_image
             
     except Exception as e:
-        print(f"❌ Proxy pipeline network anomaly: {e}")
-        return [], None
+        print(f"❌ [NETWORK TIMEOUT/CRASH] Pipeline anomaly: {e}")
+        return None, None
 
 
 # ==========================================
@@ -105,102 +110,102 @@ async def fetch_ebay_via_proxy(session, search_query, player_name):
 # ==========================================
 async def process_variant(session, sem, card, variant, set_info):
     """Processes a single variant card concurrently."""
-    # The semaphore acts as a traffic light so we don't bombard the API
-    async with sem:
-        clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
-        variant_id = variant['id']
-        variant_name = variant['variant_name']
-        last_scraped = variant.get('last_scraped_at')
+    try:
+        async with sem:
+            clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
+            variant_id = variant['id']
+            variant_name = variant['variant_name']
+            last_scraped = variant.get('last_scraped_at')
 
-        # 🛡️ THE ROADBLOCK: Skip variant if already scraped within 24h
-        if last_scraped:
-            last_scraped_dt = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
-            time_delta = datetime.now(timezone.utc) - last_scraped_dt
-            if time_delta.total_seconds() < 86400:
-                print(f"⏭️ Skipping {clean_player_name} ({variant_name}) - Updated < 24h ago.")
-                return
-
-        if variant_name.lower() == 'base':
-            search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
-        else:
-            clean_variant_string = re.sub(r'\(.*?\)', '', variant_name).strip()
-            search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']} {clean_variant_string}"
-
-        # Fetch pricing data asynchronously
-        raw_comps, live_card_image = await fetch_ebay_via_proxy(session, search_term, card['player_name'])
-        
-        # 1. IMMEDIATE BAIL-OUT: If the proxy failed, exit BEFORE updating the timestamp
-        if not raw_comps:
-            print(f"⚠️ Proxy failed for {clean_player_name} ({variant_name}). Skipping timestamp update to allow retry.")
-            return
-            
-        # Optional Image Update
-        if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
-            await asyncio.to_thread(
-                lambda: supabase.table("base_cards")
-                .update({"image_url": live_card_image})
-                .eq("id", card["id"]).execute()
-            )
-            card['image_url'] = live_card_image 
-
-        # Filter Trash Keywords
-        price_entries = []
-        for comp in raw_comps:
-            if comp['price'] > 10000:
-                continue
-
-            title_lower = comp['title'].lower()
+            # Skip checking if updated within the last 24 hours
+            if last_scraped:
+                last_scraped_dt = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
+                time_delta = datetime.now(timezone.utc) - last_scraped_dt
+                if time_delta.total_seconds() < 86400:
+                    print(f"⏭️ Skipping {clean_player_name} ({variant_name}) - Updated < 24h ago.")
+                    return
 
             if variant_name.lower() == 'base':
-                trash_keywords = ["lot", "bulk", "set of", "bundle", "complete set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one", "printing plate"]
-                if any(word in title_lower for word in trash_keywords):
-                    continue
+                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
             else:
-                clean_token = re.sub(r'\(.*?\)', '', variant_name).lower().strip()
-                if "autograph" in clean_token and not any(x in title_lower for x in ["auto", "sig", "ink", "signed", "autograph"]):
-                    continue
-                elif "memorabilia" in clean_token and not any(x in title_lower for x in ["jersey", "patch", "relic", "material"]):
-                    continue
-                elif clean_token not in title_lower and "autograph" not in clean_token and "memorabilia" not in clean_token:
-                    continue
+                clean_variant_string = re.sub(r'\(.*?\)', '', variant_name).strip()
+                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']} {clean_variant_string}"
 
-            grade = "Raw"
-            if "psa 10" in title_lower: grade = "PSA 10"
-            elif "psa 9" in title_lower: grade = "PSA 9"
+            raw_comps, live_card_image = await fetch_ebay_via_proxy(session, search_term, card['player_name'])
             
-            price_entries.append({
-                "variant_id": variant_id,
-                "sale_price": comp['price'],
-                "sale_date": comp['date'],
-                "grade": grade,
-                "sale_image_url": comp['listing_image'] or card['image_url']
-            })
-
-        # Final Insert Push & Timestamp Update
-        if price_entries:
-            try:
-                # 2. Update prices
-                await asyncio.to_thread(
-                    lambda: supabase.table("price_comps").insert(price_entries[:10]).execute()
-                )
+            # Case 1: True Proxy Crash/Network Dropout -> Save timestamp to retry later
+            if raw_comps is None:
+                print(f"⚠️ Proxy node failed entirely for {clean_player_name} ({variant_name}). Skipping timestamp to allow retry later.")
+                return
                 
-                # 3. ONLY update the timestamp if we successfully pushed new data
+            # Case 2: Successful pull, but zero listings found on market
+            if len(raw_comps) == 0:
+                print(f"ℹ️ Zero sold listings extracted for {clean_player_name} ({variant_name}).")
+                # REMOVED the timestamp update loop here temporarily so you can re-run tests instantly without lockouts
+                return
+                
+            # Optional Image Syncing Update
+            if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
                 await asyncio.to_thread(
-                    lambda: supabase.table("card_variants")
-                    .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
-                    .eq("id", variant_id).execute()
+                    lambda: supabase.table("base_cards")
+                    .update({"image_url": live_card_image})
+                    .eq("id", card["id"]).execute()
                 )
-                print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name})!")
-            except Exception as db_write_error:
-                print(f"⚠️ Database write skipped: {db_write_error}")
-        else:
-            print(f"ℹ️ No valid comps found for {clean_player_name} ({variant_name}) after filtering.")
-            # Optional: Uncomment if you want to lock out variants with genuinely zero sales so they aren't checked every single time
-            # await asyncio.to_thread(
-            #     lambda: supabase.table("card_variants")
-            #     .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
-            #     .eq("id", variant_id).execute()
-            # )
+                card['image_url'] = live_card_image 
+
+            # Filter Trash Keywords
+            price_entries = []
+            for comp in raw_comps:
+                if comp['price'] > 10000:
+                    continue
+
+                title_lower = comp['title'].lower()
+
+                if variant_name.lower() == 'base':
+                    trash_keywords = ["lot", "bulk", "set of", "bundle", "complete set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one", "printing plate"]
+                    if any(word in title_lower for word in trash_keywords):
+                        continue
+                else:
+                    clean_token = re.sub(r'\(.*?\)', '', variant_name).lower().strip()
+                    if "autograph" in clean_token and not any(x in title_lower for x in ["auto", "sig", "ink", "signed", "autograph"]):
+                        continue
+                    elif "memorabilia" in clean_token and not any(x in title_lower for x in ["jersey", "patch", "relic", "material"]):
+                        continue
+                    elif clean_token not in title_lower and "autograph" not in clean_token and "memorabilia" not in clean_token:
+                        continue
+
+                grade = "Raw"
+                if "psa 10" in title_lower: grade = "PSA 10"
+                elif "psa 9" in title_lower: grade = "PSA 9"
+                
+                price_entries.append({
+                    "variant_id": variant_id,
+                    "sale_price": comp['price'],
+                    "sale_date": comp['date'],
+                    "grade": grade,
+                    "sale_image_url": comp['listing_image'] or card['image_url']
+                })
+
+            # Final Database Updates
+            if price_entries:
+                try:
+                    await asyncio.to_thread(
+                        lambda: supabase.table("price_comps").insert(price_entries[:10]).execute()
+                    )
+                    
+                    await asyncio.to_thread(
+                        lambda: supabase.table("card_variants")
+                        .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
+                        .eq("id", variant_id).execute()
+                    )
+                    print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name}) in Supabase!")
+                except Exception as db_write_error:
+                    print(f"⚠️ [DB WRITE ERROR]: {db_write_error}")
+            else:
+                print(f"ℹ️ No valid comps found for {clean_player_name} ({variant_name}) after filtering out trash keywords.")
+
+    except Exception as fatal_error:
+        print(f"💥 [FATAL THREAD ERROR] Variant {variant.get('variant_name', 'Unknown')} crashed: {fatal_error}")
 
 
 # ==========================================
@@ -221,7 +226,6 @@ async def async_main():
     start_row = 0
     page_size = 1000
 
-    # 1. Fetch the target data payload synchronously
     while True:
         response = supabase.table("base_cards").select(
             "id, player_name, card_number, image_url, slug, card_sets!inner(year, brand, series), card_variants(id, variant_name, variant_category, last_scraped_at)"
@@ -242,14 +246,10 @@ async def async_main():
         print("⚠️ Search complete. 0 records matched this constraint matrix inside your DB.")
         return
 
-    # 2. Build our Concurrent Task List
     tasks = []
-    
-    # 🚦 Semaphore limits the script to max 5 active outbound connections at a single time
-    sem = asyncio.Semaphore(5) 
-    
-    # Use a single network session to cleanly manage all concurrent pipelines
+    sem = asyncio.Semaphore(5)  # Restricts execution to max 5 concurrent external connections
     connector = aiohttp.TCPConnector(limit=5)
+    
     async with aiohttp.ClientSession(connector=connector) as session:
         for card in cards:
             set_info = card['card_sets']
@@ -257,13 +257,13 @@ async def async_main():
                 task = process_variant(session, sem, card, variant, set_info)
                 tasks.append(task)
                 
-        # 3. Fire all pipelines simultaneously
         print(f"🔥 Igniting {len(tasks)} concurrent pipelines...")
         await asyncio.gather(*tasks)
 
+
 def run_pipeline():
-    # Bootstrap the async loop from standard Python
     asyncio.run(async_main())
+
 
 if __name__ == "__main__":
     run_pipeline()
