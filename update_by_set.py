@@ -3,6 +3,7 @@ import re
 import sys
 import asyncio
 import aiohttp
+import urllib.parse
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client, Client
@@ -19,25 +20,31 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ==========================================
-# 1. ASYNCHRONOUS NETWORK FETCHER (WITH X-RAY LOGGING)
+# 1. ASYNCHRONOUS NETWORK FETCHER
 # ==========================================
 async def fetch_ebay_via_proxy(session, search_query, player_name):
     """Routes explicit queries through proxy networks concurrently."""
     clean_query = re.sub(r'\s+', ' ', search_query).strip()
-    # Manually format unsafe characters to protect URL formation without double-encoding strings
-    safe_query = clean_query.replace(" ", "+").replace("#", "%23").replace("&", "%26")
-    
     print(f"📡 Routing proxy query for: '{clean_query}'...")
-    ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={safe_query}&LH_Complete=1&LH_Sold=1"
     
-    scraper_params = {
-        "api_key": SCRAPER_API_KEY,
-        "url": ebay_url,
-        "render": "true"  # Forces ScraperAPI to use a headless browser to bypass strict anti-bot walls
+    # 1. Let Python safely build the exact eBay URL parameters
+    ebay_params = {
+        "_nkw": clean_query,
+        "LH_Complete": "1",
+        "LH_Sold": "1"
     }
+    ebay_query_string = urllib.parse.urlencode(ebay_params)
+    ebay_url = f"https://www.ebay.com/sch/i.html?{ebay_query_string}"
+    
+    # 2. Wrap the ENTIRE eBay URL so ScraperAPI can read it perfectly without breaking
+    safe_ebay_url = urllib.parse.quote(ebay_url, safe='')
+    
+    # 3. Build the final ScraperAPI URL manually as a single, absolute string
+    scraper_url = f"http://api.scraperapi.com/?api_key={SCRAPER_API_KEY}&url={safe_ebay_url}"
     
     try:
-        async with session.get('http://api.scraperapi.com/', params=scraper_params, timeout=45) as response:
+        # 4. Pass the EXACT string to aiohttp. DO NOT use the params={} dictionary.
+        async with session.get(scraper_url, timeout=45) as response:
             if response.status != 200:
                 print(f"❌ [HTTP ERROR] Status code: {response.status} for query: {clean_query}")
                 return None, None
@@ -52,7 +59,6 @@ async def fetch_ebay_via_proxy(session, search_query, player_name):
             print(f"🔍 [DEBUG] '{clean_query}' | Page Title: {page_title} | HTML Size: {len(html)} bytes | Listings Found: {len(listings)}")
             
             if len(listings) == 0:
-                # Extract clean page context to check if we loaded a CAPTCHA/human verification page
                 page_text = soup.get_text(separator=' ', strip=True)[:250]
                 print(f"🚨 [WARNING] 0 LISTINGS HTML SNIPPET: {page_text}...")
             # --- 🛑 X-RAY DEBUG LOGGING END 🛑 ---
@@ -141,7 +147,15 @@ async def process_variant(session, sem, card, variant, set_info):
             # Case 2: Successful pull, but zero listings found on market
             if len(raw_comps) == 0:
                 print(f"ℹ️ Zero sold listings extracted for {clean_player_name} ({variant_name}).")
-                # REMOVED the timestamp update loop here temporarily so you can re-run tests instantly without lockouts
+                # Update timestamp so we don't burn credits checking empty cards
+                try:
+                    await asyncio.to_thread(
+                        lambda: supabase.table("card_variants")
+                        .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
+                        .eq("id", variant_id).execute()
+                    )
+                except Exception:
+                    pass
                 return
                 
             # Optional Image Syncing Update
@@ -203,6 +217,15 @@ async def process_variant(session, sem, card, variant, set_info):
                     print(f"⚠️ [DB WRITE ERROR]: {db_write_error}")
             else:
                 print(f"ℹ️ No valid comps found for {clean_player_name} ({variant_name}) after filtering out trash keywords.")
+                # Lock out the card if it had sales, but they were all spam/trash keywords
+                try:
+                    await asyncio.to_thread(
+                        lambda: supabase.table("card_variants")
+                        .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})
+                        .eq("id", variant_id).execute()
+                    )
+                except Exception:
+                    pass
 
     except Exception as fatal_error:
         print(f"💥 [FATAL THREAD ERROR] Variant {variant.get('variant_name', 'Unknown')} crashed: {fatal_error}")
