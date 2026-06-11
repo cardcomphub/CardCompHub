@@ -3,7 +3,6 @@ import re
 import sys
 import asyncio
 import aiohttp
-import urllib.parse
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client, Client
@@ -24,27 +23,27 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ==========================================
 async def fetch_ebay_via_proxy(session, search_query, player_name):
     """Routes explicit queries through proxy networks concurrently."""
-    clean_query = re.sub(r'\s+', ' ', search_query).strip()
+    # 1. Clean the query and strip any lingering restricted symbols that break proxies
+    clean_query = search_query.replace("#", "").replace("&", "and").strip()
+    clean_query = re.sub(r'\s+', ' ', clean_query) # Remove double spaces
+    
     print(f"📡 Routing proxy query for: '{clean_query}'...")
     
-    # 1. Let Python safely build the exact eBay URL parameters
-    ebay_params = {
-        "_nkw": clean_query,
-        "LH_Complete": "1",
-        "LH_Sold": "1"
+    # 2. Build the simplest possible eBay URL using basic '+' for spaces
+    query_formatted = clean_query.replace(' ', '+')
+    ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={query_formatted}&LH_Complete=1&LH_Sold=1"
+    
+    # 3. Let aiohttp safely encode the outer ScraperAPI request automatically
+    scraper_params = {
+        "api_key": SCRAPER_API_KEY,
+        "url": ebay_url,
+        "premium": "true",       # 🛡️ Activates Residential Proxies
+        "country_code": "us"     # 🌎 Forces US-localized results
     }
-    ebay_query_string = urllib.parse.urlencode(ebay_params)
-    ebay_url = f"https://www.ebay.com/sch/i.html?{ebay_query_string}"
-    
-    # 2. Wrap the ENTIRE eBay URL so ScraperAPI can read it perfectly without breaking
-    safe_ebay_url = urllib.parse.quote(ebay_url, safe='')
-    
-    # 3. Build the final ScraperAPI URL manually as a single, absolute string
-    scraper_url = f"http://api.scraperapi.com/?api_key={SCRAPER_API_KEY}&url={safe_ebay_url}"
     
     try:
-        # 4. Pass the EXACT string to aiohttp. DO NOT use the params={} dictionary.
-        async with session.get(scraper_url, timeout=45) as response:
+        # 60s timeout to allow residential proxies time to handshake
+        async with session.get('http://api.scraperapi.com/', params=scraper_params, timeout=60) as response:
             if response.status != 200:
                 print(f"❌ [HTTP ERROR] Status code: {response.status} for query: {clean_query}")
                 return None, None
@@ -52,17 +51,16 @@ async def fetch_ebay_via_proxy(session, search_query, player_name):
             html = await response.text()
             soup = BeautifulSoup(html, 'html.parser')
             
-            # --- 🛑 X-RAY DEBUG LOGGING START 🛑 ---
             page_title = soup.title.string.strip() if soup.title else "NO TITLE FOUND"
             listings = soup.find_all(class_=lambda x: x and ('s-item' in x or 's-card' in x))
             
-            print(f"🔍 [DEBUG] '{clean_query}' | Page Title: {page_title} | HTML Size: {len(html)} bytes | Listings Found: {len(listings)}")
+            print(f"🔍 [DEBUG] '{clean_query}' | Title: {page_title} | Found: {len(listings)}")
             
-            if len(listings) == 0:
-                page_text = soup.get_text(separator=' ', strip=True)[:250]
-                print(f"🚨 [WARNING] 0 LISTINGS HTML SNIPPET: {page_text}...")
-            # --- 🛑 X-RAY DEBUG LOGGING END 🛑 ---
-            
+            # 🛑 SAFETY NET: If eBay deflects us to the homepage, treat it as a proxy failure
+            if "Shop by Category" in page_title:
+                print(f"🚨 [WARNING] eBay deflected request to Homepage. Treating as network failure.")
+                return None, None
+                
             parsed_comps = []
             first_discovered_image = None
             player_last_name = player_name.split()[-1].lower() if player_name else ""
@@ -123,7 +121,6 @@ async def process_variant(session, sem, card, variant, set_info):
             variant_name = variant['variant_name']
             last_scraped = variant.get('last_scraped_at')
 
-            # Skip checking if updated within the last 24 hours
             if last_scraped:
                 last_scraped_dt = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
                 time_delta = datetime.now(timezone.utc) - last_scraped_dt
@@ -131,17 +128,18 @@ async def process_variant(session, sem, card, variant, set_info):
                     print(f"⏭️ Skipping {clean_player_name} ({variant_name}) - Updated < 24h ago.")
                     return
 
+            # Removed the '#' from the search term logic entirely!
             if variant_name.lower() == 'base':
-                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
+                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} {card['card_number']}"
             else:
                 clean_variant_string = re.sub(r'\(.*?\)', '', variant_name).strip()
-                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']} {clean_variant_string}"
+                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} {card['card_number']} {clean_variant_string}"
 
             raw_comps, live_card_image = await fetch_ebay_via_proxy(session, search_term, card['player_name'])
             
-            # Case 1: True Proxy Crash/Network Dropout -> Save timestamp to retry later
+            # Case 1: True Proxy Crash, Redirect, or Timeout -> Skip timestamp
             if raw_comps is None:
-                print(f"⚠️ Proxy node failed entirely for {clean_player_name} ({variant_name}). Skipping timestamp to allow retry later.")
+                print(f"⚠️ Proxy node/Redirect failed for {clean_player_name} ({variant_name}). Skipping timestamp.")
                 return
                 
             # Case 2: Successful pull, but zero listings found on market
