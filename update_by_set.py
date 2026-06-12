@@ -127,7 +127,9 @@ def run_pipeline():
 
             # 🛡️ THE ROADBLOCK: Skip variant if it has already been scraped within the last 24 hours
             if last_scraped:
-                last_scraped_dt = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
+               # Splits the string at the decimal, grabs the base time, and adds the timezone back
+                base_time = last_scraped.split('.')[0] 
+                last_scraped_dt = datetime.fromisoformat(f"{base_time}+00:00")
                 time_delta = datetime.now(timezone.utc) - last_scraped_dt
                 if time_delta.total_seconds() < 86400: # 86400 seconds = 24 hours
                     print(f"⏭️ Skipping {clean_player_name} ({variant_name}) - Already updated within 24 hours.")
