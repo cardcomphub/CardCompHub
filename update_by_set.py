@@ -1,30 +1,55 @@
 import os
 import re
-import sys
 import time
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client, Client
 
-# 🔐 WORKER AUTHENTICATION
+# 🔐 WORKER AUTHENTICATION: Loaded dynamically via runtime execution environment containers
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
-    raise ValueError("❌ Execution failed: Missing required environment variables.")
+    raise ValueError("❌ Execution failed: Missing required environment variables in execution space.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def parse_supabase_timestamp(ts_string):
+    """Safely parses ISO timestamps from Supabase, handling Python <3.11 microsecond bugs."""
+    if not ts_string:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+        
+    clean_ts = ts_string.replace('Z', '+00:00')
+    if '.' in clean_ts:
+        base_part, tz_part = clean_ts.split('.', 1)
+        if '+' in tz_part:
+            tz_offset = '+' + tz_part.split('+', 1)[1]
+        elif '-' in tz_part:
+            tz_offset = '-' + tz_part.split('-', 1)[1]
+        else:
+            tz_offset = '+00:00'
+        clean_ts = f"{base_part}{tz_offset}"
+        
+    return datetime.fromisoformat(clean_ts)
+
 
 def fetch_ebay_via_proxy(search_query, player_name):
     """Routes explicit queries through proxy networks, extracting raw pricing metrics."""
     print(f"📡 Routing proxy query for: '{search_query}'...")
+    
     encoded_query = search_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
     
+    proxy_params = {
+        'api_key': SCRAPER_API_KEY,
+        'url': ebay_url
+    }
+    
     try:
-        response = requests.get('http://api.scraperapi.com', params={'api_key': SCRAPER_API_KEY, 'url': ebay_url}, timeout=30)
+        response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
         if response.status_code != 200:
             print(f"❌ Proxy node issue. Status code: {response.status_code}")
             return [], None
@@ -43,6 +68,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
             
             if title_el and price_el:
                 title = title_el.text.strip()
+                price_text = price_el.text.strip()
+                
                 if "Shop on eBay" in title or not title:
                     continue
                 if player_last_name and player_last_name not in title.lower():
@@ -51,24 +78,30 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 listing_specific_img = None
                 if image_el:
                     listing_specific_img = image_el.get('data-src') or image_el.get('src') or image_el.get('data-delayed-src')
+                    if listing_specific_img and ("gif" in listing_specific_img or "placeholder" in listing_specific_img):
+                        listing_specific_img = None
                 
                 if listing_specific_img and not first_discovered_image:
                     first_discovered_image = listing_specific_img
                 
-                price_match = re.search(r'\d+(?:\.\d{2})?', price_el.text.replace(',', ''))
+                clean_price = price_text.split('to')[0]
+                price_match = re.search(r'\d+(?:\.\d{2})?', clean_price.replace(',', ''))
+                
                 parsed_date = datetime.now(timezone.utc).isoformat()
                 date_match = re.search(r'(?:Sold|Ended)\s+([A-Za-z]{3})\s+(\d+),\s+(\d{4})', item.text, re.IGNORECASE)
                 
                 if date_match:
+                    month, day, year = date_match.group(1), date_match.group(2), date_match.group(3)
                     try:
-                        parsed_date = datetime.strptime(f"{date_match.group(1)} {date_match.group(2)} {date_match.group(3)}", "%b %d %Y").replace(tzinfo=timezone.utc).isoformat()
+                        parsed_date = datetime.strptime(f"{month} {day} {year}", "%b %d %Y").replace(tzinfo=timezone.utc).isoformat()
                     except:
                         pass
 
                 if price_match:
+                    price_float = float(price_match.group())
                     parsed_comps.append({
                         "title": title, 
-                        "price": float(price_match.group()),
+                        "price": price_float,
                         "date": parsed_date,
                         "listing_image": listing_specific_img
                     })
@@ -78,86 +111,58 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
+
 def run_pipeline():
-    # 🎯 ARGV INTERCEPTION: Capture target parameters directly from CLI execution
-    if len(sys.argv) < 4:
-        print("❌ Error: Missing arguments. Syntax: python update_by_set.py <year> <brand> '<series>'")
-        return
-        
-    tgt_year = sys.argv[1].strip()
-    tgt_brand = sys.argv[2].strip()
-    tgt_series = sys.argv[3].strip()
+    print("🚀 Running simplified target variant data stream sync...")
+    today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
-    print(f"🚀 Target Confirmed: Fetching cards matching [{tgt_year} {tgt_brand} {tgt_series}]...")
-
-    cards = []
-    start_row = 0
-    page_size = 1000
-
-    # Server-Side Filtered Keyset Pagination Loop - Now pulls 'last_scraped_at' timestamp
-    while True:
-        response = supabase.table("base_cards").select(
-            "id, player_name, card_number, image_url, slug, card_sets!inner(year, brand, series), card_variants(id, variant_name, variant_category, last_scraped_at)"
-        ).eq("card_sets.year", tgt_year)\
-         .eq("card_sets.brand", tgt_brand)\
-         .eq("card_sets.series", tgt_series)\
-         .range(start_row, start_row + page_size - 1).execute()
+    # Track variants already updated today to optimize API call usage
+    today_comps_response = supabase.table("price_comps") \
+        .select("variant_id") \
+        .gte("created_at", f"{today_str}T00:00:00+00:00") \
+        .execute()
         
-        page_data = response.data or []
-        cards.extend(page_data)
-        if len(page_data) < page_size:
-            break
-        start_row += page_size
-    
-    print(f"📦 Successfully loaded {len(cards)} target card rows into task processing memory.")
+    variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
+    print(f"ℹ️ Found {len(variants_updated_today)} variants already updated today.")
 
-    if not cards:
-        print("⚠️ Search complete. 0 records matched this constraint matrix inside your DB.")
-        return
+    # Fetch the card catalog using the 10,000 row safety extension limit
+    response = supabase.table("base_cards").select(
+        "id, player_name, card_number, image_url, slug, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
+    ).limit(10000).execute()
+    cards = response.data
 
     for card in cards:
         set_info = card['card_sets']
         variants = card['card_variants']
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
+        # Loop through each individual variation of this card
         for variant in variants:
             variant_id = variant['id']
             variant_name = variant['variant_name']
-            last_scraped = variant.get('last_scraped_at')
+            
+            # 🛡️ CACHE CHECK: Skip if this exact variant has already processed sales lines today
+            if variant_id in variants_updated_today:
+                print(f"⏩ SKIP: {clean_player_name} #{card['card_number']} ({variant_name}) already updated today.")
+                continue
 
-            # 🛡️ THE ROADBLOCK: Skip variant if it has already been scraped within the last 24 hours
-           # ❌ DELETE THIS ENTIRE BLOCK:
-if last_scraped:
-    # Splits the string at the decimal, grabs the base time, and adds the timezone back
-    base_time = last_scraped.split('.')[0] 
-    last_scraped_dt = datetime.fromisoformat(f"{base_time}+00:00")
-    time_delta = datetime.now(timezone.utc) - last_scraped_dt
-    if time_delta.total_seconds() < 86400: # 86400 seconds = 24 hours
-        print(f"⏭️ Skipping {clean_player_name} ({variant_name}) - Already updated within 24 hours.")
-        continue
-
+            # 🚀 BUILD EXPLICIT TARGET SEARCH STRING
+            # Format: Year + Brand + Series Set Name + Player Name + Card Number + Specific Variant Name
             if variant_name.lower() == 'base':
                 search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
             else:
+                # Clean parenthetical notes from variants like "Cosmic (/49)" down to "Cosmic" for cleaner search syntax
                 clean_variant_string = re.sub(r'\(.*?\)', '', variant_name).strip()
                 search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']} {clean_variant_string}"
 
-            # Run Scraper
+            # Query the target variant directly
             raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
             
-            # ⏳ TIMESTAMP REFRESH: Immediately update the variant's last_scraped_at time 
-            # We do this even if raw_comps is empty so we don't try rescraping dead listings on the same day.
-            try:
-                supabase.table("card_variants")\
-                    .update({"last_scraped_at": datetime.now(timezone.utc).isoformat()})\
-                    .eq("id", variant_id).execute()
-            except Exception as ts_error:
-                print(f"⚠️ Timestamp update skipped: {ts_error}")
-
             if not raw_comps:
                 time.sleep(1)
                 continue
                 
+            # Update card placeholder image if empty
             if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
                 supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
                 card['image_url'] = live_card_image 
@@ -169,11 +174,13 @@ if last_scraped:
 
                 title_lower = comp['title'].lower()
 
+                # Basic baseline filters to keep junk data out of base charts
                 if variant_name.lower() == 'base':
                     trash_keywords = ["lot", "bulk", "set of", "bundle", "complete set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one", "printing plate"]
                     if any(word in title_lower for word in trash_keywords):
                         continue
                 else:
+                    # Guard: If searching for a specialized variant, make sure the text contains a relevant keyword token
                     clean_token = re.sub(r'\(.*?\)', '', variant_name).lower().strip()
                     if "autograph" in clean_token and not any(x in title_lower for x in ["auto", "sig", "ink", "signed", "autograph"]):
                         continue
@@ -194,10 +201,11 @@ if last_scraped:
                     "sale_image_url": comp['listing_image'] or card['image_url']
                 })
 
+            # Commit pricing details directly to the target variant record row
             if price_entries:
                 try:
                     supabase.table("price_comps").insert(price_entries[:10]).execute()
-                    print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name})!")
+                    print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name}) with new comps!")
                 except Exception as db_write_error:
                     print(f"⚠️ Database write skipped: {db_write_error}")
                 
