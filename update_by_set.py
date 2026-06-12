@@ -126,22 +126,7 @@ def run_pipeline():
             last_scraped = variant.get('last_scraped_at')
 
             # 🛡️ THE ROADBLOCK: Skip variant if it has already been scraped within the last 24 hours
-            if last_scraped:
-                # 1. Standardize the timezone suffix
-                clean_ts = last_scraped.replace('Z', '+00:00')
-                
-                # 2. Only strip and reconstruct IF a decimal actually exists
-                if '.' in clean_ts:
-                    clean_ts = clean_ts.split('.')[0] + '+00:00'
-                    
-                # 3. Parse safely
-                last_scraped_dt = datetime.fromisoformat(clean_ts)
-                time_delta = datetime.now(timezone.utc) - last_scraped_dt
-                
-                # 4. 24-hour cache check
-                if time_delta.total_seconds() < 86400: # 86400 seconds = 24 hours
-                    print(f"⏭️ Skipping {clean_player_name} ({variant_name}) - Already updated within 24 hours.")
-                    continue
+           
 
             if variant_name.lower() == 'base':
                 search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
