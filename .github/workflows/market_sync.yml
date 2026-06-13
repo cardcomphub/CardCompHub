@@ -14,7 +14,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11' # 🚀 UPGRADED TO FIX TIMESTAMP BUG
 
       - name: Install Supabase Client
         run: pip install supabase
@@ -45,7 +45,7 @@ jobs:
               brand_str = s['brand'].strip()
               series_str = s['series'].strip()
               
-              # ?? EXCLUSION FILTERS
+              # 🛑 EXCLUSION FILTERS
               # 1. Skip standard Panini Donruss
               if brand_str.lower() == 'panini' and series_str.lower() == 'donruss':
                   continue
@@ -64,7 +64,7 @@ jobs:
                   })
           
           matrix_data = {'include': unique_sets}
-          print(f'?? Generated dynamic matrix mapping for {len(unique_sets)} filtered sets.')
+          print(f'✅ Generated dynamic matrix mapping for {len(unique_sets)} filtered sets.')
           
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'matrix={json.dumps(matrix_data)}\n')
@@ -86,10 +86,10 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11' # 🚀 UPGRADED TO FIX TIMESTAMP BUG
           cache: 'pip'
 
-      # ??? THE FIX IS HERE: Added aiohttp to the pip install command
+      # 🛠️ THE FIX IS HERE: Added aiohttp to the pip install command
       - name: Install Dependencies
         run: pip install requests beautifulsoup4 supabase aiohttp
 

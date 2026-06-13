@@ -17,6 +17,25 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+def parse_supabase_timestamp(ts_string):
+    """Safely parses ISO timestamps from Supabase, handling Python <3.11 microsecond bugs."""
+    if not ts_string:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+        
+    clean_ts = ts_string.replace('Z', '+00:00')
+    if '.' in clean_ts:
+        base_part, tz_part = clean_ts.split('.', 1)
+        if '+' in tz_part:
+            tz_offset = '+' + tz_part.split('+', 1)[1]
+        elif '-' in tz_part:
+            tz_offset = '-' + tz_part.split('-', 1)[1]
+        else:
+            tz_offset = '+00:00'
+        clean_ts = f"{base_part}{tz_offset}"
+        
+    return datetime.fromisoformat(clean_ts)
+
+
 def fetch_ebay_via_proxy(search_query, player_name):
     """Routes explicit queries through proxy networks, extracting raw pricing metrics."""
     print(f"📡 Routing proxy query for: '{search_query}'...")
