@@ -1,4 +1,4 @@
-name: Sync Card Release Dates (Beckett HTML)
+name: Sync Card Release Dates (Beckett Deep Scrape)
 
 on:
   workflow_dispatch: # Allows manual triggers from the Actions tab
@@ -20,7 +20,8 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
-        run: pip install supabase requests beautifulsoup4
+        # We need both feedparser (for the RSS) and beautifulsoup4 (for the article text)
+        run: pip install supabase requests beautifulsoup4 feedparser
 
       - name: Run Release Sync Script
         env:
