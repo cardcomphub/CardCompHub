@@ -1,7 +1,6 @@
-import feedparser
-import re
 import os
 import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client
 
@@ -10,75 +9,88 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY") 
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+TARGET_URL = "https://www.beckett.com/news/sports-card-release-calendar/"
 
-BECKETT_FEEDS = {
-    "MLB": "https://www.beckett.com/news/category/baseball/feed/",
-    "NBA": "https://www.beckett.com/news/category/basketball/feed/",
-    "NFL": "https://www.beckett.com/news/category/football/feed/"
-}
+def scrape_calendar():
+    print("📡 Fetching master calendar from Beckett...")
+    
+    if not SCRAPER_API_KEY:
+        print("❌ No ScraperAPI key found! Aborting.")
+        return
 
-def sync_beckett_releases():
-    for sport, feed_url in BECKETT_FEEDS.items():
-        print(f"\n{'='*40}")
-        print(f"📡 Fetching {sport} feed from Beckett...")
+    # Using ScraperAPI to bypass Cloudflare and render the HTML tables
+    proxy_params = {
+        'api_key': SCRAPER_API_KEY, 
+        'url': TARGET_URL, 
+        'premium': 'true',
+        'render': 'true'
+    }
+    
+    try:
+        response = requests.get('http://api.scraperapi.com', params=proxy_params)
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        parsed_feed = None
+        # Beckett groups releases into HTML tables
+        tables = soup.find_all('table')
+        print(f"📊 Found {len(tables)} tables on the calendar page.")
         
-        if SCRAPER_API_KEY:
-            print("🕵️ Routing through ScraperAPI (Premium Pool)...")
-            # Using premium=true to force residential IPs and bypass Cloudflare
-            proxy_params = {
-                'api_key': SCRAPER_API_KEY, 
-                'url': feed_url, 
-                'premium': 'true',
-                'keep_headers': 'true'
-            }
-            headers = {'Accept': 'application/rss+xml, application/xml'}
-            
-            try:
-                response = requests.get('http://api.scraperapi.com', params=proxy_params, headers=headers)
-                print(f"HTTP Status: {response.status_code}")
-                
-                # Check if Beckett intercepted us with a firewall page
-                if "<html" in response.text[:50].lower():
-                    print("⚠️ ALERT: Beckett served an HTML firewall page instead of the RSS feed!")
-                    print(f"Snippet: {response.text[:150]}...")
-                
-                parsed_feed = feedparser.parse(response.text)
-            except Exception as e:
-                print(f"❌ Proxy request failed: {e}")
-                continue
-        else:
-            print("⚠️ No ScraperAPI key found! Trying direct connection (high risk of block)...")
-            parsed_feed = feedparser.parse(feed_url)
+        current_year = datetime.now().year
         
-        print(f"📊 Total items pulled from RSS: {len(parsed_feed.entries)}")
-        
-        for entry in parsed_feed.entries:
-            title = entry.title
-            title_lower = title.lower()
-            
-            # X-RAY: Print everything it sees before the filter deletes it
-            print(f"  👀 Saw: {title}")
-            
-            if "details" in title_lower or "checklist" in title_lower or "release" in title_lower:
-                if "release dates" in title_lower and "information" in title_lower:
-                    continue
+        for table in tables:
+            rows = table.find_all('tr')
+            for row in rows:
+                cols = row.find_all(['td', 'th'])
                 
-                clean_set_name = re.sub(r'(?i)(checklist|details|release date|team set lists|guide|image gallery|and|,|-).*', '', title).strip()
-                
-                release_data = {
-                    "set_name": clean_set_name,
-                    "sport": sport,
-                    "status": "Scheduled",
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                }
-                
-                try:
-                    supabase.table("card_releases").upsert(release_data, on_conflict="set_name").execute()
-                    print(f"  ✅ SAVED TO DB: {clean_set_name}")
-                except Exception as e:
-                    print(f"  ❌ DATABASE ERROR for '{clean_set_name}': {e}")
+                # Ensure it's a valid data row (Date | Product | Sport)
+                if len(cols) >= 3:
+                    date_text = cols[0].text.strip()
+                    set_name = cols[1].text.strip()
+                    sport = cols[2].text.strip()
+                    
+                    # Skip header rows or empty sets
+                    if "Date" in date_text or "Product" in set_name or not set_name:
+                        continue
+                        
+                    # Filter for only your targeted sports
+                    sport_lower = sport.lower()
+                    sport_code = ""
+                    if "baseball" in sport_lower: sport_code = "MLB"
+                    elif "basketball" in sport_lower: sport_code = "NBA"
+                    elif "football" in sport_lower: sport_code = "NFL"
+                    else: continue # Skip hockey, wrestling, etc.
+                    
+                    # Parse the Date
+                    db_date = None
+                    status = "Scheduled"
+                    
+                    if "TBD" in date_text.upper():
+                        status = "TBD"
+                    else:
+                        try:
+                            # Try to convert "June 15" into "2026-06-15"
+                            parsed_date = datetime.strptime(f"{date_text} {current_year}", "%B %d %Y")
+                            db_date = parsed_date.strftime("%Y-%m-%d")
+                        except ValueError:
+                            # If the date is vague like "Late June", save it as the status instead
+                            status = date_text
+
+                    release_data = {
+                        "set_name": set_name,
+                        "sport": sport_code,
+                        "release_date": db_date,
+                        "status": status,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }
+                    
+                    # Push to database
+                    try:
+                        supabase.table("card_releases").upsert(release_data, on_conflict="set_name").execute()
+                        print(f"  ✅ SAVED: {set_name} | Date: {db_date} | Status: {status}")
+                    except Exception as e:
+                        print(f"  ❌ DB ERROR for '{set_name}': {e}")
+                        
+    except Exception as e:
+        print(f"❌ Scrape failed: {e}")
 
 if __name__ == "__main__":
-    sync_beckett_releases()
+    scrape_calendar()
