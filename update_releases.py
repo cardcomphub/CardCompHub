@@ -19,7 +19,6 @@ BECKETT_FEEDS = {
 }
 
 def extract_date_from_article(article_url):
-    """Opens the Beckett article and uses a wide net to catch any date format."""
     if not SCRAPER_API_KEY:
         return None, "Scheduled"
         
@@ -29,10 +28,8 @@ def extract_date_from_article(article_url):
         response = requests.get('http://api.scraperapi.com', params=proxy_params)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Use a pipe separator so HTML paragraphs don't mash together into one long string
         text_content = soup.get_text(separator='|')
         
-        # Grab whatever text immediately follows "Release Date:" on that specific line
         match = re.search(r'Release Date:?\s*([^|]+)', text_content, re.IGNORECASE)
         
         if not match:
@@ -45,25 +42,30 @@ def extract_date_from_article(article_url):
         if "TBD" in raw_date.upper():
             return None, "TBD"
             
-        # Clean up the string (remove days of the week if the author included them)
-        clean_date = re.sub(r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s*', '', raw_date, flags=re.IGNORECASE).strip()
+        # THE SNIPER REGEX: Hunts only for "Month + Number" inside the garbage text
+        month_regex = r'(?i)(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,?\s*\d{4})?'
+        date_match = re.search(month_regex, raw_date)
         
-        # Try a bunch of common Beckett date formats
-        formats_to_try = ["%B %d, %Y", "%B %d", "%m/%d/%Y", "%m/%d/%y"]
-        
-        for fmt in formats_to_try:
+        if date_match:
+            # Strip out commas to make parsing math perfectly clean
+            clean_date_str = date_match.group(0).replace(',', '').strip() 
+            
             try:
-                parsed = datetime.strptime(clean_date, fmt)
-                # If they forgot the year (e.g., "June 15"), Python defaults to 1900. Set it to current year.
-                if parsed.year == 1900:
+                # If the author included the year (e.g., "June 10 2026")
+                if re.search(r'\d{4}', clean_date_str):
+                    parsed = datetime.strptime(clean_date_str, "%B %d %Y")
+                # If they only wrote "June 10", default to the current year
+                else:
+                    parsed = datetime.strptime(clean_date_str, "%B %d")
                     parsed = parsed.replace(year=datetime.now().year)
+                    
                 return parsed.strftime("%Y-%m-%d"), "Scheduled"
             except ValueError:
-                continue
-        
-        # If we couldn't parse the date mathematically, it might be vague like "Late June 2026".
-        # Save that exact human-readable phrase as the Status so it's not lost!
-        return None, raw_date[:30] 
+                pass
+                
+        # If it's complete nonsense (like a period), clean off the "subject to change" fluff and save it
+        clean_status = re.sub(r'(?i)\(subject to change\):?\s*', '', raw_date).strip()[:30]
+        return None, clean_status if clean_status else "Scheduled"
             
     except Exception as e:
         print(f"    ❌ Failed to extract date: {e}")
@@ -97,7 +99,6 @@ def sync_beckett_releases():
                 clean_set_name = re.sub(r'(?i)(checklist|details|release date|team set lists|guide|image gallery|and|,|-).*', '', title).strip()
                 print(f"👀 Found: {clean_set_name}")
                 
-                # Deep Scrape using the new, smarter logic
                 db_date, status = extract_date_from_article(entry.link)
                 
                 release_data = {
@@ -108,7 +109,6 @@ def sync_beckett_releases():
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }
                 
-                # Push to Database
                 try:
                     supabase.table("card_releases").upsert(release_data, on_conflict="set_name").execute()
                     print(f"  ✅ SAVED: {clean_set_name} | Date: {db_date} | Status: {status}")
