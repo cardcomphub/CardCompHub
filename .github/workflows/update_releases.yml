@@ -1,7 +1,7 @@
-name: Sync Card Release Dates (Beckett RSS)
+name: Sync Card Release Dates (Beckett HTML)
 
 on:
-  workflow_dispatch: # Allows manual triggers
+  workflow_dispatch: # Allows manual triggers from the Actions tab
   schedule:
     - cron: '0 4 * * 5' # Automatically runs every Friday at 4:00 AM UTC
 
@@ -20,7 +20,7 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
-        run: pip install supabase feedparser requests
+        run: pip install supabase requests beautifulsoup4
 
       - name: Run Release Sync Script
         env:
