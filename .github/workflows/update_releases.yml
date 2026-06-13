@@ -1,0 +1,29 @@
+name: Sync Card Release Dates (Beckett RSS)
+
+on:
+  workflow_dispatch: # Allows you to trigger it manually anytime from the Actions tab
+  schedule:
+    - cron: '0 4 * * 5' # Automatically runs every single day at 4:00 AM UTC
+
+jobs:
+  sync-releases:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Using 3.11 to keep it consistent and safe from timestamp bugs
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install supabase feedparser
+
+      - name: Run Release Sync Script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python update_releases.py
