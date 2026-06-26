@@ -1,12 +1,13 @@
 import os
 import re
+import sys
 import time
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client, Client
 
-# 🔐 WORKER AUTHENTICATION: Loaded dynamically via runtime execution environment containers
+# 🔐 WORKER AUTHENTICATION
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY")
@@ -16,43 +17,29 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ... [Keep your parse_supabase_timestamp and fetch_ebay_via_proxy functions exactly as they are] ...
 
 def parse_supabase_timestamp(ts_string):
-    """Safely parses ISO timestamps from Supabase, handling Python <3.11 microsecond bugs."""
     if not ts_string:
         return datetime.fromtimestamp(0, tz=timezone.utc)
-        
     clean_ts = ts_string.replace('Z', '+00:00')
     if '.' in clean_ts:
         base_part, tz_part = clean_ts.split('.', 1)
-        if '+' in tz_part:
-            tz_offset = '+' + tz_part.split('+', 1)[1]
-        elif '-' in tz_part:
-            tz_offset = '-' + tz_part.split('-', 1)[1]
-        else:
-            tz_offset = '+00:00'
+        if '+' in tz_part: tz_offset = '+' + tz_part.split('+', 1)[1]
+        elif '-' in tz_part: tz_offset = '-' + tz_part.split('-', 1)[1]
+        else: tz_offset = '+00:00'
         clean_ts = f"{base_part}{tz_offset}"
-        
     return datetime.fromisoformat(clean_ts)
 
-
 def fetch_ebay_via_proxy(search_query, player_name):
-    """Routes explicit queries through proxy networks, extracting raw pricing metrics."""
     print(f"📡 Routing proxy query for: '{search_query}'...")
-    
     encoded_query = search_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
     
-    proxy_params = {
-        'api_key': SCRAPER_API_KEY,
-        'url': ebay_url
-    }
-    
+    proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url}
     try:
         response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
-        if response.status_code != 200:
-            print(f"❌ Proxy node issue. Status code: {response.status_code}")
-            return [], None
+        if response.status_code != 200: return [], None
             
         soup = BeautifulSoup(response.text, 'html.parser')
         listings = soup.find_all(class_=lambda x: x and ('s-item' in x or 's-card' in x))
@@ -70,17 +57,14 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 title = title_el.text.strip()
                 price_text = price_el.text.strip()
                 
-                if "Shop on eBay" in title or not title:
-                    continue
-                if player_last_name and player_last_name not in title.lower():
-                    continue
+                if "Shop on eBay" in title or not title: continue
+                if player_last_name and player_last_name not in title.lower(): continue
                 
                 listing_specific_img = None
                 if image_el:
                     listing_specific_img = image_el.get('data-src') or image_el.get('src') or image_el.get('data-delayed-src')
                     if listing_specific_img and ("gif" in listing_specific_img or "placeholder" in listing_specific_img):
                         listing_specific_img = None
-                
                 if listing_specific_img and not first_discovered_image:
                     first_discovered_image = listing_specific_img
                 
@@ -89,109 +73,136 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 
                 parsed_date = datetime.now(timezone.utc).isoformat()
                 date_match = re.search(r'(?:Sold|Ended)\s+([A-Za-z]{3})\s+(\d+),\s+(\d{4})', item.text, re.IGNORECASE)
-                
                 if date_match:
                     month, day, year = date_match.group(1), date_match.group(2), date_match.group(3)
-                    try:
-                        parsed_date = datetime.strptime(f"{month} {day} {year}", "%b %d %Y").replace(tzinfo=timezone.utc).isoformat()
-                    except:
-                        pass
+                    try: parsed_date = datetime.strptime(f"{month} {day} {year}", "%b %d %Y").replace(tzinfo=timezone.utc).isoformat()
+                    except: pass
 
                 if price_match:
-                    price_float = float(price_match.group())
                     parsed_comps.append({
                         "title": title, 
-                        "price": price_float,
+                        "price": float(price_match.group()),
                         "date": parsed_date,
                         "listing_image": listing_specific_img
                     })
-                        
         return parsed_comps, first_discovered_image
     except Exception as e:
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
+# 🛡️ THE NEW STRICT VERIFICATION GATE
+def verify_strict_comp(ebay_title, card_year, brand, series, player_name, card_number, variant_name):
+    title_clean = ebay_title.lower()
 
-def run_pipeline():
-    print("🚀 Running simplified target variant data stream sync...")
+    # 1. Verify Exact Year
+    if str(card_year) not in title_clean: return False
+
+    # 2. Verify Exact Card Number (prevents #1 matching #10 or #100)
+    num_pattern = rf'(?:^|\s|#){re.escape(str(card_number))}(?:\s|$|,)'
+    if not re.search(num_pattern, title_clean): return False
+
+    # 3. Verify Brand/Series constraint (Fixes the Optic vs National Treasures issue)
+    # Extracts the core series word (e.g., "Optic" or "Prizm")
+    core_series = series.lower().replace("panini", "").replace("topps", "").replace("bowman", "").strip().split()[0]
+    if core_series and core_series not in title_clean: return False
+
+    # 4. Verify Player Name Match
+    player_parts = player_name.lower().replace("'", "").replace(".", "").split()
+    title_normalized = title_clean.replace("'", "").replace(".", "")
+    if not all(part in title_normalized for part in player_parts): return False
+
+    # 5. Verify Variant / Parallel
+    variant_clean = re.sub(r'\(.*?\)', '', variant_name).lower().strip()
+    
+    if variant_clean != "base":
+        # All parts of the parallel name MUST be in the title
+        variant_parts = variant_clean.split()
+        if not all(v_part in title_clean for v_part in variant_parts): return False
+    else:
+        # Base Exclusion Rule: If variant is Base, NO parallel words allowed
+        trash_keywords = ["lot", "bulk", "set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one"]
+        parallel_keywords = ["pandora", "gold", "prizm", "refractor", "silver", "holo", "mosaic", "parallel", "tie-dye"]
+        if any(kw in title_clean for kw in trash_keywords + parallel_keywords): return False
+
+    return True
+
+
+def run_pipeline(target_year, target_brand, target_series):
+    print(f"🚀 Running sync for Matrix Target: {target_year} {target_brand} {target_series}...")
     today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
-    # Track variants already updated today to optimize API call usage
+    # Track variants already updated today
     today_comps_response = supabase.table("price_comps") \
         .select("variant_id") \
         .gte("created_at", f"{today_str}T00:00:00+00:00") \
         .execute()
         
     variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
-    print(f"ℹ️ Found {len(variants_updated_today)} variants already updated today.")
 
-    # Fetch the card catalog using the 10,000 row safety extension limit
+    # 🛠️ BUG FIX: Fetch the exact SET ID first, then fetch cards only for that set!
+    set_response = supabase.table("card_sets").select("id").eq("year", target_year).eq("brand", target_brand).eq("series", target_series).execute()
+    
+    if not set_response.data:
+        print("❌ Set not found in database. Exiting matrix job.")
+        return
+        
+    target_set_id = set_response.data[0]['id']
+
+    # Now we only fetch cards belonging to the set triggered by GitHub Actions
     response = supabase.table("base_cards").select(
-        "id, player_name, card_number, image_url, slug, card_sets(year, brand, series), card_variants(id, variant_name, variant_category)"
-    ).limit(10000).execute()
+        "id, player_name, card_number, image_url, slug, card_variants(id, variant_name, variant_category)"
+    ).eq("set_id", target_set_id).execute()
     cards = response.data
 
     for card in cards:
-        set_info = card['card_sets']
         variants = card['card_variants']
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
-        # Loop through each individual variation of this card
         for variant in variants:
             variant_id = variant['id']
             variant_name = variant['variant_name']
             
-            # 🛡️ CACHE CHECK: Skip if this exact variant has already processed sales lines today
-            if variant_id in variants_updated_today:
-                print(f"⏩ SKIP: {clean_player_name} #{card['card_number']} ({variant_name}) already updated today.")
-                continue
+            if variant_id in variants_updated_today: continue
 
-            # 🚀 BUILD EXPLICIT TARGET SEARCH STRING
-            # Format: Year + Brand + Series Set Name + Player Name + Card Number + Specific Variant Name
+            # Build search term
             if variant_name.lower() == 'base':
-                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']}"
+                search_term = f"{target_year} {target_brand} {target_series} {clean_player_name} #{card['card_number']}"
             else:
-                # Clean parenthetical notes from variants like "Cosmic (/49)" down to "Cosmic" for cleaner search syntax
                 clean_variant_string = re.sub(r'\(.*?\)', '', variant_name).strip()
-                search_term = f"{set_info['year']} {set_info['brand']} {set_info['series']} {clean_player_name} #{card['card_number']} {clean_variant_string}"
+                search_term = f"{target_year} {target_brand} {target_series} {clean_player_name} #{card['card_number']} {clean_variant_string}"
 
-            # Query the target variant directly
             raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
             
             if not raw_comps:
                 time.sleep(1)
                 continue
                 
-            # Update card placeholder image if empty
             if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
                 supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
                 card['image_url'] = live_card_image 
 
             price_entries = []
             for comp in raw_comps:
-                if comp['price'] > 10000:
-                    continue
+                if comp['price'] > 10000: continue
 
-                title_lower = comp['title'].lower()
+                # 🛡️ THE NEW VERIFICATION CHECK
+                # If the title fails the strict check, we skip it entirely. No fallback filling!
+                is_valid = verify_strict_comp(
+                    ebay_title=comp['title'],
+                    card_year=target_year,
+                    brand=target_brand,
+                    series=target_series,
+                    player_name=clean_player_name,
+                    card_number=card['card_number'],
+                    variant_name=variant_name
+                )
 
-                # Basic baseline filters to keep junk data out of base charts
-                if variant_name.lower() == 'base':
-                    trash_keywords = ["lot", "bulk", "set of", "bundle", "complete set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one", "printing plate"]
-                    if any(word in title_lower for word in trash_keywords):
-                        continue
-                else:
-                    # Guard: If searching for a specialized variant, make sure the text contains a relevant keyword token
-                    clean_token = re.sub(r'\(.*?\)', '', variant_name).lower().strip()
-                    if "autograph" in clean_token and not any(x in title_lower for x in ["auto", "sig", "ink", "signed", "autograph"]):
-                        continue
-                    elif "memorabilia" in clean_token and not any(x in title_lower for x in ["jersey", "patch", "relic", "material"]):
-                        continue
-                    elif clean_token not in title_lower and "autograph" not in clean_token and "memorabilia" not in clean_token:
-                        continue
+                if not is_valid:
+                    continue # Drops the mismatched card immediately
 
                 grade = "Raw"
-                if "psa 10" in title_lower: grade = "PSA 10"
-                elif "psa 9" in title_lower: grade = "PSA 9"
+                if "psa 10" in comp['title'].lower(): grade = "PSA 10"
+                elif "psa 9" in comp['title'].lower(): grade = "PSA 9"
                 
                 price_entries.append({
                     "variant_id": variant_id,
@@ -201,15 +212,23 @@ def run_pipeline():
                     "sale_image_url": comp['listing_image'] or card['image_url']
                 })
 
-            # Commit pricing details directly to the target variant record row
             if price_entries:
                 try:
                     supabase.table("price_comps").insert(price_entries[:10]).execute()
-                    print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name}) with new comps!")
+                    print(f"✅ SUCCESS: Updated {clean_player_name} #{card['card_number']} ({variant_name})")
                 except Exception as db_write_error:
                     print(f"⚠️ Database write skipped: {db_write_error}")
-                
+            
             time.sleep(1)
 
 if __name__ == "__main__":
-    run_pipeline()
+    # 🛠️ BUG FIX: Catching the YML matrix arguments passed via command line
+    if len(sys.argv) < 4:
+        print("❌ Error: Missing matrix arguments. Usage: python update_by_set.py <year> <brand> <series>")
+        sys.exit(1)
+        
+    target_year = sys.argv[1]
+    target_brand = sys.argv[2]
+    target_series = sys.argv[3]
+    
+    run_pipeline(target_year, target_brand, target_series)
