@@ -50,10 +50,6 @@ jobs:
               if brand_str.lower() == 'panini' and series_str.lower() == 'donruss':
                   continue
                   
-              # 2. Skip standard Topps Chrome (keeps 'Chrome x Cactus Jack' safe)
-              if brand_str.lower() == 'topps' and series_str.lower() == 'chrome':
-                  continue
-                  
               key_tuple = (year_str, brand_str, series_str)
               if key_tuple not in seen:
                   seen.add(key_tuple)
