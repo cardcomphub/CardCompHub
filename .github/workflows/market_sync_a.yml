@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install requests beautifulsoup4 supabase aiohttp
-      - run: python update_by_set.py \"${{ matrix.year }}\" \"${{ matrix.brand }}\" \"${{ matrix.series }}\"
+      - run: python update_by_set.py "${{ matrix.year }}" "${{ matrix.brand }}" "${{ matrix.series }}"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
