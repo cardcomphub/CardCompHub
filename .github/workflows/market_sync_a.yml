@@ -24,18 +24,17 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           python -c "
-          import os, json, sys
+          import os, json
           from supabase import create_client
           supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
           sets = supabase.table('card_sets').select('year, brand, series').execute().data or []
-          # Deduplicate
           unique = { (str(s['year']), s['brand'].strip(), s['series'].strip()) for s in sets 
                      if not (s['brand'].strip().lower() == 'panini' and s['series'].strip().lower() == 'donruss') }
           unique_list = [{'year': u[0], 'brand': u[1], 'series': u[2]} for u in unique]
-          # Part A: First 144
           final_list = sorted(unique_list, key=lambda x: (x['year'], x['brand']))[:144]
+          matrix_json = json.dumps({'include': final_list})
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'matrix={json.dumps({'include': final_list})}\n')
+              f.write(f'matrix={matrix_json}\n')
           "
 
   scrape-matrix:
