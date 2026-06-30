@@ -22,7 +22,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
     encoded_query = search_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
     
-    proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url}
+    # 🇺🇸 GUARDRAIL 1: Force a US IP address to prevent foreign currency conversion glitches
+    proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us'}
     try:
         response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
         if response.status_code != 200: return [], None
@@ -41,10 +42,15 @@ def fetch_ebay_via_proxy(search_query, player_name):
             if not title_el or not price_el: continue
                 
             title = title_el.text.strip()
-            price_text = price_el.text.strip()
+            price_text = price_el.text.strip().upper()
             
-            if "Shop on eBay" in title or not title: continue
+            if "SHOP ON EBAY" in title.upper() or not title: continue
             if player_last_name and player_last_name not in title.lower(): continue
+
+            # 🛡️ GUARDRAIL 2: Hard-skip any foreign currency text strings that slip through
+            foreign_currencies = ["MXN", "C $", "AU $", "EUR", "£", "GBP", "CAD"]
+            if any(foreign in price_text for foreign in foreign_currencies):
+                continue
             
             # 📸 Image Extraction
             image_el = item.find('img')
@@ -57,7 +63,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 first_discovered_image = listing_specific_img
             
             # 💰 Price Parsing
-            clean_price = price_text.split('to')[0]
+            clean_price = price_text.split('TO')[0]
             price_match = re.search(r'\d+(?:\.\d{2})?', clean_price.replace(',', ''))
             
             # 🗓️ THE DATE FIX: Target the exact eBay HTML class for sold dates
@@ -97,7 +103,6 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if not all(part in title_clean for part in player_parts): return None
     
     # 2. MATCH FORGIVENESS: Must match EITHER card number OR core series
-    # (Fixes the $1,750 Emeka sale that omitted the "GG-16")
     clean_card_num = str(card_number).lower().replace("#", "").strip()
     has_card_num = clean_card_num and clean_card_num in title_clean.replace("#", "")
     
@@ -110,7 +115,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     base_variant_id = None
     matched_variant_id = None
     
-    # Sort variants so longer names (like "Gold Refractor") evaluate before "Refractor"
+    # Sort variants so longer names evaluate before short names
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
     
     for variant in sorted_variants:
@@ -119,11 +124,9 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             base_variant_id = variant['id']
             continue
             
-        # Standardize Topps plurals (e.g., "Refractors" -> "Refractor")
         variant_clean = re.sub(r'\(.*?\)', '', v_name).strip().replace("refractors", "refractor")
         variant_parts = variant_clean.split()
         
-        # If ALL parts of the variant name are in the title, assign it to that parallel
         if all(v_part in title_clean for v_part in variant_parts):
             matched_variant_id = variant['id']
             break
@@ -132,7 +135,6 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if matched_variant_id:
         return matched_variant_id
     elif base_variant_id:
-        # If it didn't match a specific parallel, ensure it isn't carrying trash keywords before applying to Base
         trash_keywords = ["lot", "bulk", "set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one"]
         parallel_keywords = ["pandora", "gold", "prizm", "refractor", "silver", "holo", "mosaic", "parallel", "tie-dye", "geometric", "ruby", "sapphire", "x-fractor"]
         
@@ -168,7 +170,6 @@ def run_pipeline(target_year, target_brand, target_series):
     for card in cards:
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
-        # 🎯 NEW BATCH QUERY: We only hit the ScraperAPI ONCE per base card now.
         search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
         
@@ -184,7 +185,6 @@ def run_pipeline(target_year, target_brand, target_series):
         for comp in raw_comps:
             if comp['price'] > 10000: continue
 
-            # Send the comp to the classifier to figure out which bucket it belongs in
             matched_variant_id = classify_comp(
                 ebay_title=comp['title'],
                 card_year=target_year,
@@ -209,7 +209,6 @@ def run_pipeline(target_year, target_brand, target_series):
                 "sale_image_url": comp['listing_image'] or None
             })
 
-        # 🎯 NEW GROUPED DEDUPLICATION: Push all variants at once
         if price_entries:
             variant_groups = {}
             for entry in price_entries:
@@ -222,11 +221,28 @@ def run_pipeline(target_year, target_brand, target_series):
                 
                 try:
                     existing_comps = supabase.table("price_comps").select("sale_price, sale_date").eq("variant_id", vid).execute()
-                    existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in (existing_comps.data or []))
+                    existing_data = existing_comps.data or []
+                    existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in existing_data)
+                    
+                    # 📈 GUARDRAIL 3: Server-side Dynamic Median Evaluation
+                    historical_prices = sorted([float(c['sale_price']) for c in existing_data])
+                    median_price = 0
+                    if historical_prices:
+                        mid = len(historical_prices) // 2
+                        median_price = historical_prices[mid] if len(historical_prices) % 2 != 0 else (historical_prices[mid - 1] + historical_prices[mid]) / 2.0
+                    
+                    max_allowed_price = median_price * 5 if median_price > 0 else float('inf')
                     
                     unique_new_entries = []
                     for entry in entries:
-                        fingerprint = f"{float(entry['sale_price'])}_{entry['sale_date']}"
+                        sale_price = float(entry['sale_price'])
+                        
+                        # Defend the database against wild anomalies
+                        if median_price > 0 and sale_price > max_allowed_price:
+                            print(f"🛑 REJECTED: ${sale_price} is an extreme outlier (Limit: ${max_allowed_price:.2f})")
+                            continue
+
+                        fingerprint = f"{sale_price}_{entry['sale_date']}"
                         if fingerprint not in existing_fingerprints:
                             unique_new_entries.append(entry)
                             existing_fingerprints.add(fingerprint)
