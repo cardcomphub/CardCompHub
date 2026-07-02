@@ -19,19 +19,17 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # 🎯 ADMIN SELECTION CONFIGURATION (UPGRADED)
-# Provide the base card slug, and the exact string of the variant you want to highlight.
-# You can use "Base", or specific parallels like "Silver", "Red Refractor /5", or "PSA 10"
 ADMIN_CHOSEN_CARDS = [
     {
-        "slug": "2025-topps-chrome-shadow-etch-josh-allen",
+        "slug": "2025-topps-chrome-shadow-etch-josh-allen-se2?set=2025-topps-chrome-shadow-etch",
         "variant": "Gold Refractor" 
     },
     {
-        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-cam-ward",
+        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-cam-ward-stn1?set=2025-topps-cosmic-chrome-football-stars-in-the-night",
         "variant": "Base"
     },
     {
-        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-jaxson-dart",
+        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-jaxson-dart-stn2?set=2025-topps-cosmic-chrome-football-stars-in-the-night",
         "variant": "Base"
     },
     {
@@ -40,9 +38,8 @@ ADMIN_CHOSEN_CARDS = [
     },
     {
         "slug": "2026-topps-series-1-1991-topps-baseball-autographs-jacob-misiorowski-91amis",
-        "variant": "1991 Topps Baseball Autographs"
+        "variant": "Base" # Corrected to "Base" to find the autograph tier properly
     }
-    
 ]
 
 def generate_slug(title):
@@ -107,9 +104,10 @@ def generate_editorial_article(picks_data):
     
     Strict Content Requirements for Each Card:
     1. EXACT VARIANT FOCUS: You must explicitly mention the exact parallel/variant being analyzed and the set/series/brand/year that it is in (e.g., "Silver Prizm", "Red Refractor"). Do not talk about the card generically.
-    2. VELOCITY & PRICING: Use the provided `recent_sales_history` array to describe the card's liquidity. Did it sell multiple times this week? Is the `estimated_current_floor` holding steady based on the transaction dates?
-    3. THE VISUAL AESTHETIC: Describe the concrete physical design of this specific set/variant (e.g., Chromium finish, color matching to team jerseys, print lines, centering tolerances). But also include the coolness of this card. You are reviewing this card because I think they are very good looking and aesthetic
-    4. TEMPORAL ANCHORING: Weave the current date ({current_date_str}) into the narrative to ground the market analysis.
+    2. IMAGE EMBEDDING (CRITICAL): Immediately beneath the `##` header for each card, you MUST insert the card's image using standard Markdown syntax. Example: `![Player Name - Variant](image_url)`. The exact `image_url` is provided in the JSON data.
+    3. VELOCITY & PRICING: Use the provided `recent_sales_history` array to describe the card's liquidity. Did it sell multiple times this week? Is the `estimated_current_floor` holding steady based on the transaction dates?
+    4. THE VISUAL AESTHETIC: Describe the concrete physical design of this specific set/variant (e.g., Chromium finish, color matching to team jerseys, print lines, centering tolerances). But also include the coolness of this card. You are reviewing this card because I think they are very good looking and aesthetic.
+    5. TEMPORAL ANCHORING: Weave the current date ({current_date_str}) into the narrative to ground the market analysis.
 
     Output Format:
     Return a JSON object containing exactly three keys: "title", "meta_description", and "content".
@@ -117,7 +115,7 @@ def generate_editorial_article(picks_data):
     Formatting Rules:
     - "title": An engaging, premium headline featuring the targeted players/variants.
     - "meta_description": A crisp SEO snippet under 160 characters.
-    - "content": Clean Markdown text. Use ## headers for each card, bold exact price points, and write detailed, narrative paragraphs.
+    - "content": Clean Markdown text. Use ## headers for each card, bold exact price points, embed the image below the header, and write detailed, narrative paragraphs.
     """
 
     response = ai_client.chat.completions.create(
