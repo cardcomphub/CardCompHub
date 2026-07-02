@@ -23,13 +23,26 @@ ai_client = OpenAI(api_key=OPENAI_API_KEY)
 # You can use "Base", or specific parallels like "Silver", "Red Refractor /5", or "PSA 10"
 ADMIN_CHOSEN_CARDS = [
     {
-        "slug": "ashton-jeanty-2025-bowman-university",
-        "variant": "Base" 
+        "slug": "2025-topps-chrome-shadow-etch-josh-allen",
+        "variant": "Gold Refractor" 
     },
     {
-        "slug": "brock-bowers-2024-prizm",
-        "variant": "Silver"
+        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-cam-ward",
+        "variant": "Base"
+    },
+    {
+        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-jaxson-dart",
+        "variant": "Base"
+    },
+    {
+        "slug": "2025-topps-chrome-xs-and-whoas-dylan-harper-xw9",
+        "variant": "Base"
+    },
+    {
+        "slug": "2026-topps-series-1-1991-topps-baseball-autographs-jacob-misiorowski-91amis",
+        "variant": "1991 Topps Baseball Autographs"
     }
+    
 ]
 
 def generate_slug(title):
@@ -93,9 +106,9 @@ def generate_editorial_article(picks_data):
     {data_payload}
     
     Strict Content Requirements for Each Card:
-    1. EXACT VARIANT FOCUS: You must explicitly mention the exact parallel/variant being analyzed (e.g., "Silver Prizm", "Red Refractor"). Do not talk about the card generically.
+    1. EXACT VARIANT FOCUS: You must explicitly mention the exact parallel/variant being analyzed and the set/series/brand/year that it is in (e.g., "Silver Prizm", "Red Refractor"). Do not talk about the card generically.
     2. VELOCITY & PRICING: Use the provided `recent_sales_history` array to describe the card's liquidity. Did it sell multiple times this week? Is the `estimated_current_floor` holding steady based on the transaction dates?
-    3. THE VISUAL AESTHETIC: Describe the concrete physical design of this specific set/variant (e.g., Chromium finish, color matching to team jerseys, print lines, centering tolerances).
+    3. THE VISUAL AESTHETIC: Describe the concrete physical design of this specific set/variant (e.g., Chromium finish, color matching to team jerseys, print lines, centering tolerances). But also include the coolness of this card. You are reviewing this card because I think they are very good looking and aesthetic
     4. TEMPORAL ANCHORING: Weave the current date ({current_date_str}) into the narrative to ground the market analysis.
 
     Output Format:
