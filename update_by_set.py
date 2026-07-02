@@ -21,29 +21,29 @@ def fetch_ebay_via_proxy(search_query, player_name):
     print(f"📡 Routing proxy query for: '{search_query}'...")
     encoded_query = search_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
-    
+
     # 🇺🇸 GUARDRAIL 1: Force a US IP address to prevent foreign currency conversion glitches
     proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us'}
     try:
         response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
         if response.status_code != 200: return [], None
-            
+
         soup = BeautifulSoup(response.text, 'html.parser')
         listings = soup.find_all(class_=lambda x: x and ('s-item' in x or 's-card' in x))
-        
+
         parsed_comps = []
         first_discovered_image = None
         player_last_name = player_name.split()[-1].lower() if player_name else ""
-        
+
         for item in listings:
             title_el = item.find(class_=lambda x: x and 'title' in x.lower())
             price_el = item.find(class_=lambda x: x and 'price' in x.lower())
-            
+
             if not title_el or not price_el: continue
-                
+
             title = title_el.text.strip()
             price_text = price_el.text.strip().upper()
-            
+
             if "SHOP ON EBAY" in title.upper() or not title: continue
             if player_last_name and player_last_name not in title.lower(): continue
 
@@ -51,7 +51,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
             foreign_currencies = ["MXN", "C $", "AU $", "EUR", "£", "GBP", "CAD"]
             if any(foreign in price_text for foreign in foreign_currencies):
                 continue
-            
+
             # 📸 Image Extraction
             image_el = item.find('img')
             listing_specific_img = None
@@ -61,16 +61,16 @@ def fetch_ebay_via_proxy(search_query, player_name):
                     listing_specific_img = None
             if listing_specific_img and not first_discovered_image:
                 first_discovered_image = listing_specific_img
-            
+
             # 💰 Price Parsing
             clean_price = price_text.split('TO')[0]
             price_match = re.search(r'\d+(?:\.\d{2})?', clean_price.replace(',', ''))
-            
+
             # 🗓️ THE DATE FIX: Target the exact eBay HTML class for sold dates
             parsed_date = datetime.now(timezone.utc).isoformat()
             positive_span = item.find("span", class_=lambda x: x and 'POSITIVE' in x.upper())
             date_text = positive_span.text.strip() if positive_span else item.text
-            
+
             # Regex captures: Sold Apr 16, 2026 OR Sold Jun 2
             date_match = re.search(r'(?:Sold|Ended)\s*([A-Za-z]{3})\s+(\d{1,2})(?:,\s*(\d{4}))?', date_text, re.IGNORECASE)
             if date_match:
@@ -96,70 +96,94 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
 # 🛡️ THE NEW SMART CLASSIFIER (Handles Parallels & Base Fallback)
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants):
-    title_clean = ebay_title.lower().replace("'", "").replace(".", "")
-    
-    # 1. Player Name MUST match
-    player_parts = player_name.lower().replace("'", "").replace(".", "").split()
-    if not all(part in title_clean for part in player_parts): return None
-    
-    # 2. MATCH FORGIVENESS: Must match EITHER card number OR core series
-    clean_card_num = str(card_number).lower().replace("#", "").strip()
-    has_card_num = clean_card_num and clean_card_num in title_clean.replace("#", "")
-    
-    core_series = series.lower().replace("panini", "").replace("topps", "").replace("bowman", "").strip().split()[0]
-    has_series = core_series and core_series in title_clean
-    
-    if not (has_card_num or has_series): return None
+    title_lower = ebay_title.lower()
+    title_alphanum = re.sub(r'[^a-z0-9\s]', ' ', title_lower)
 
-    # 3. Check for specific parallel variants FIRST
+    # 1. 🗓️ STRICT YEAR ENFORCEMENT
+    if str(card_year) not in title_alphanum:
+        return None
+
+    # 2. 👤 PLAYER NAME ENFORCEMENT
+    player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
+    if not all(part in title_alphanum for part in player_parts): 
+        return None
+
+    # 3. 🔢 SMART CARD NUMBER MATCHING
+    raw_num = str(card_number).lower().replace("#", "").strip()
+    has_card_num = False
+    
+    if len(raw_num) > 1:
+        # Handles complex variants (e.g. 'AK-17' matches 'AK17' or 'AK 17') by stripping spaces/hyphens
+        stripped_title = re.sub(r'[\s\-]', '', title_lower)
+        stripped_num = re.sub(r'[\s\-]', '', raw_num)
+        has_card_num = stripped_num in stripped_title
+    elif len(raw_num) == 1:
+        # Uses word boundaries for single digits so card #9 doesn't trigger on a "PSA 9" string
+        has_card_num = bool(re.search(rf'\b{raw_num}\b', title_alphanum))
+
+    # 4. 🗂️ STRICT SERIES MATCHING (Ignores generic market fluff)
+    ignore_words = {"panini", "topps", "bowman", "upper", "deck", "fleer", "series", "update", "draft", "set", "all", "the", "and", "of"}
+    series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
+    series_tokens = [w for w in series_clean.split() if w not in ignore_words and len(w) >= 2]
+
+    has_series = False
+    if series_tokens:
+        has_series = any(token in title_alphanum for token in series_tokens)
+    else:
+        has_series = True
+
+    if not (has_card_num or has_series): 
+        return None
+
+    # 5. Check for specific parallel variants FIRST
     base_variant_id = None
     matched_variant_id = None
-    
+
     # Sort variants so longer names evaluate before short names
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
-    
+
     for variant in sorted_variants:
         v_name = variant['variant_name'].lower().strip()
         if v_name == "base":
             base_variant_id = variant['id']
             continue
-            
+
         variant_clean = re.sub(r'\(.*?\)', '', v_name).strip().replace("refractors", "refractor")
         variant_parts = variant_clean.split()
-        
-        if all(v_part in title_clean for v_part in variant_parts):
+
+        if all(v_part in title_alphanum for v_part in variant_parts):
             matched_variant_id = variant['id']
             break
-            
-    # 4. FALLBACK TO BASE
+
+    # 6. FALLBACK TO BASE
     if matched_variant_id:
         return matched_variant_id
     elif base_variant_id:
         trash_keywords = ["lot", "bulk", "set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one"]
         parallel_keywords = ["pandora", "gold", "prizm", "refractor", "silver", "holo", "mosaic", "parallel", "tie-dye", "geometric", "ruby", "sapphire", "x-fractor"]
-        
-        if not any(kw in title_clean for kw in parallel_keywords + trash_keywords):
+
+        if not any(kw in title_alphanum for kw in parallel_keywords + trash_keywords):
             return base_variant_id
-            
+
     return None
 
 def run_pipeline(target_year, target_brand, target_series):
     print(f"🚀 Running sync for Matrix Target: {target_year} {target_brand} {target_series}...")
     today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    
+
     today_comps_response = supabase.table("price_comps") \
         .select("variant_id") \
         .gte("created_at", f"{today_str}T00:00:00+00:00") \
         .execute()
-        
+
     variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
 
     set_response = supabase.table("card_sets").select("id").eq("year", target_year).eq("brand", target_brand).eq("series", target_series).execute()
-    
+
     if not set_response.data:
         print("❌ Set not found in database. Exiting matrix job.")
         return
-        
+
     target_set_id = set_response.data[0]['id']
 
     response = supabase.table("base_cards").select(
@@ -172,11 +196,11 @@ def run_pipeline(target_year, target_brand, target_series):
 
         search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
-        
+
         if not raw_comps:
             time.sleep(1)
             continue
-            
+
         if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
             supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
             card['image_url'] = live_card_image 
@@ -200,7 +224,7 @@ def run_pipeline(target_year, target_brand, target_series):
             grade = "RAW"
             if "psa 10" in comp['title'].lower(): grade = "PSA 10"
             elif "psa 9" in comp['title'].lower(): grade = "PSA 9"
-            
+
             price_entries.append({
                 "variant_id": matched_variant_id,
                 "sale_price": comp['price'],
@@ -215,28 +239,28 @@ def run_pipeline(target_year, target_brand, target_series):
                 vid = entry['variant_id']
                 if vid not in variant_groups: variant_groups[vid] = []
                 variant_groups[vid].append(entry)
-                
+
             for vid, entries in variant_groups.items():
                 if vid in variants_updated_today: continue
-                
+
                 try:
                     existing_comps = supabase.table("price_comps").select("sale_price, sale_date").eq("variant_id", vid).execute()
                     existing_data = existing_comps.data or []
                     existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in existing_data)
-                    
+
                     # 📈 GUARDRAIL 3: Server-side Dynamic Median Evaluation
                     historical_prices = sorted([float(c['sale_price']) for c in existing_data])
                     median_price = 0
                     if historical_prices:
                         mid = len(historical_prices) // 2
                         median_price = historical_prices[mid] if len(historical_prices) % 2 != 0 else (historical_prices[mid - 1] + historical_prices[mid]) / 2.0
-                    
+
                     max_allowed_price = median_price * 5 if median_price > 0 else float('inf')
-                    
+
                     unique_new_entries = []
                     for entry in entries:
                         sale_price = float(entry['sale_price'])
-                        
+
                         # Defend the database against wild anomalies
                         if median_price > 0 and sale_price > max_allowed_price:
                             print(f"🛑 REJECTED: ${sale_price} is an extreme outlier (Limit: ${max_allowed_price:.2f})")
@@ -246,25 +270,25 @@ def run_pipeline(target_year, target_brand, target_series):
                         if fingerprint not in existing_fingerprints:
                             unique_new_entries.append(entry)
                             existing_fingerprints.add(fingerprint)
-                    
+
                     if unique_new_entries:
                         supabase.table("price_comps").insert(unique_new_entries[:10]).execute()
                         print(f"✅ SUCCESS: Added {len(unique_new_entries)} new sales for {clean_player_name}")
                     else:
                         print(f"⏩ SKIP: No new unique sales found for {clean_player_name}.")
-                        
+
                 except Exception as db_write_error:
                     print(f"⚠️ Database write skipped: {db_write_error}")
-        
+
         time.sleep(1)
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
         print("❌ Error: Missing matrix arguments. Usage: python update_by_set.py <year> <brand> <series>")
         sys.exit(1)
-        
+
     target_year = sys.argv[1]
     target_brand = sys.argv[2]
     target_series = sys.argv[3]
-    
+
     run_pipeline(target_year, target_brand, target_series)
