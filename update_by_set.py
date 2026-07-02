@@ -94,7 +94,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-# 🛡️ THE SMART CLASSIFIER (Card Number Check Removed)
+# 🛡️ THE SMART CLASSIFIER (Strict Matcher + Alias Forgiveness)
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants):
     title_lower = ebay_title.lower()
     
@@ -102,6 +102,22 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     title_alphanum = re.sub(r'[^a-z0-9\s]', ' ', title_lower)
     title_alphanum = re.sub(r'\s+', ' ', title_alphanum).strip()
     title_words = set(title_alphanum.split())
+
+    # 📚 ALIAS DICTIONARY: Map official database terms to common eBay abbreviations
+    hobby_aliases = {
+        "autograph": ["autograph", "autographs", "auto", "autos"],
+        "autographs": ["autograph", "autographs", "auto", "autos"]
+        # You can easily add more here later! Example: "refractor": ["refractor", "refractors", "ref"]
+    }
+
+    # Helper engine to check if a word (or its accepted abbreviation) exists in the title
+    def words_present(required_words, pool):
+        for w in required_words:
+            allowed_forms = hobby_aliases.get(w, [w])
+            # If NEITHER the official word NOR its aliases are in the title, fail the match
+            if not any(form in pool for form in allowed_forms):
+                return False
+        return True
 
     # 🧱 GENERATE THE UN-SPLIT EXACT TOKENS
     year_token = str(card_year).strip()
@@ -111,6 +127,8 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     
     series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
     series_clean = re.sub(r'\s+', ' ', series_clean).strip()
+    
+    card_num_token = str(card_number).lower().replace("#", "").strip()
 
     # 1. 🗓️ STRICT YEAR ENFORCEMENT
     if year_token not in title_words:
@@ -121,25 +139,36 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if not all(part in title_words for part in player_parts): 
         return None
 
-    # 3. 🗂️ STRICT SERIES WORDS MATCHING
+    # 3. 🔢 SMART CARD NUMBER MATCHING (With Prefix Forgiveness)
+    has_card_num = False
+    db_num_only = re.sub(r'[^0-9]', '', card_num_token)
+
+    if len(card_num_token) > 1:
+        stripped_title = re.sub(r'[\s\-]', '', title_lower)
+        stripped_num = re.sub(r'[\s\-]', '', card_num_token)
+        # Matches if the full prefix matches, OR if just the numerical digits match a token in the title
+        has_card_num = (stripped_num in stripped_title) or (db_num_only in title_words)
+    elif len(card_num_token) == 1:
+        has_card_num = card_num_token in title_words
+
+    # 4. 🗂️ STRICT SERIES WORDS MATCHING (Using the Alias Engine)
     has_series = False
     if series_clean and series_clean != "base":
         series_words = series_clean.split()
-        # Requires EVERY SINGLE WORD of the series checklist string to exist as a discrete token in the title
-        has_series = all(word in title_words for word in series_words)
+        has_series = words_present(series_words, title_words)
     else:
         has_series = True
 
-    if not has_series: 
+    if not (has_card_num or has_series): 
         return None
 
-    # 4. Check for specific parallel variants FIRST
+    # 5. Check for specific parallel variants FIRST
     base_variant_id = None
     matched_variant_id = None
 
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
     
-    # 🛡️ Broader catch for default insert-set variants if "Base" is missing
+    # Broader catch for default insert-set variants if "Base" is missing
     default_variant_names = ["base", "silver", "holo", "base holo", "standard", "unnumbered", "raw"]
 
     for variant in sorted_variants:
@@ -153,17 +182,20 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
         variant_clean = re.sub(r'\(.*?\)', '', v_name).strip().replace("refractors", "refractor")
         variant_parts = variant_clean.split()
 
-        if all(v_part in title_words for v_part in variant_parts):
+        # 🎯 USE ALIAS ENGINE HERE TOO (Fixes "Gold Autograph" matching "Gold Auto")
+        if words_present(variant_parts, title_words):
             matched_variant_id = variant['id']
             break
 
-    # 5. FALLBACK TO BASE
+    # 6. FALLBACK TO BASE
     if matched_variant_id:
         return matched_variant_id
     elif base_variant_id:
-        trash_keywords = ["lot", "bulk", "set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one"]
+        trash_keywords = ["lot", "bulk", "set", "signed", "patch", "jersey", "relic", "1/1", "one of one"]
         parallel_keywords = ["pandora", "gold", "prizm", "refractor", "silver", "holo", "mosaic", "parallel", "tie-dye", "geometric", "ruby", "sapphire", "x-fractor"]
 
+        # Note: I removed "auto" and "autograph" from the trash_keywords list here so it doesn't 
+        # accidentally block base autographs from hitting the fallback!
         if not any(kw in title_words for kw in parallel_keywords + trash_keywords):
             return base_variant_id
 
