@@ -94,50 +94,51 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-# 🛡️ THE NEW SMART CLASSIFIER (Strict Un-split Phrase Matching)
+# 🛡️ THE SMART CLASSIFIER (Strict Word-Bound Matcher)
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants):
     title_lower = ebay_title.lower()
     
-    # Replace non-alphanumeric with spaces, then collapse multiple spaces into one for perfect phrase matching
+    # Replace non-alphanumeric with spaces, then collapse multiple spaces into one
     title_alphanum = re.sub(r'[^a-z0-9\s]', ' ', title_lower)
     title_alphanum = re.sub(r'\s+', ' ', title_alphanum).strip()
+    title_words = set(title_alphanum.split())
 
-    # 🧱 GENERATE THE 4 UN-SPLIT EXACT TOKENS
+    # 🧱 GENERATE THE UN-SPLIT EXACT TOKENS
     year_token = str(card_year).strip()
     
     brand_token = re.sub(r'[^a-z0-9\s]', ' ', brand.lower())
     brand_token = re.sub(r'\s+', ' ', brand_token).strip()
     
-    series_token = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
-    series_token = re.sub(r'\s+', ' ', series_token).strip()
+    series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
+    series_clean = re.sub(r'\s+', ' ', series_clean).strip()
     
     card_num_token = str(card_number).lower().replace("#", "").strip()
 
     # 1. 🗓️ STRICT YEAR ENFORCEMENT
-    if year_token not in title_alphanum:
+    if year_token not in title_words:
         return None
 
     # 2. 👤 PLAYER NAME ENFORCEMENT
     player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
-    if not all(part in title_alphanum for part in player_parts): 
+    if not all(part in title_words for part in player_parts): 
         return None
 
     # 3. 🔢 SMART CARD NUMBER MATCHING
     has_card_num = False
     if len(card_num_token) > 1:
-        # Handles complex variants (e.g. 'AK-17' matches 'AK17' or 'AK 17') by stripping spaces/hyphens
         stripped_title = re.sub(r'[\s\-]', '', title_lower)
         stripped_num = re.sub(r'[\s\-]', '', card_num_token)
         has_card_num = stripped_num in stripped_title
     elif len(card_num_token) == 1:
-        # Uses word boundaries for single digits so card #9 doesn't trigger on a "PSA 9" string
-        has_card_num = bool(re.search(rf'\b{card_num_token}\b', title_alphanum))
+        has_card_num = card_num_token in title_words
 
-    # 4. 🗂️ STRICT SERIES PHRASE MATCHING (Un-split Token)
+    # 4. 🗂️ THE FIX: STRICT SERIES WORDS MATCHING
     has_series = False
-    if series_token and series_token != "base":
-        # Requires the exact unbroken phrase (e.g., "rookie recruits") to be in the title
-        has_series = series_token in title_alphanum
+    if series_clean and series_clean != "base":
+        series_words = series_clean.split()
+        # Requires EVERY SINGLE WORD of the series checklist string to exist as a discrete token in the title
+        # This blocks "Hidden Potential" listings from hitting your "Hidden Potential Autographs" table
+        has_series = all(word in title_words for word in series_words)
     else:
         has_series = True
 
@@ -160,7 +161,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
         variant_clean = re.sub(r'\(.*?\)', '', v_name).strip().replace("refractors", "refractor")
         variant_parts = variant_clean.split()
 
-        if all(v_part in title_alphanum for v_part in variant_parts):
+        if all(v_part in title_words for v_part in variant_parts):
             matched_variant_id = variant['id']
             break
 
@@ -171,7 +172,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
         trash_keywords = ["lot", "bulk", "set", "auto", "signed", "autograph", "patch", "jersey", "relic", "1/1", "one of one"]
         parallel_keywords = ["pandora", "gold", "prizm", "refractor", "silver", "holo", "mosaic", "parallel", "tie-dye", "geometric", "ruby", "sapphire", "x-fractor"]
 
-        if not any(kw in title_alphanum for kw in parallel_keywords + trash_keywords):
+        if not any(kw in title_words for kw in parallel_keywords + trash_keywords):
             return base_variant_id
 
     return None
