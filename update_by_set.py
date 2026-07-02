@@ -94,7 +94,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-# 🛡️ THE SMART CLASSIFIER (Strict Word-Bound Matcher + Fallback Upgrades)
+# 🛡️ THE SMART CLASSIFIER (Card Number Check Removed)
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants):
     title_lower = ebay_title.lower()
     
@@ -111,8 +111,6 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     
     series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
     series_clean = re.sub(r'\s+', ' ', series_clean).strip()
-    
-    card_num_token = str(card_number).lower().replace("#", "").strip()
 
     # 1. 🗓️ STRICT YEAR ENFORCEMENT
     if year_token not in title_words:
@@ -123,19 +121,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if not all(part in title_words for part in player_parts): 
         return None
 
-    # 3. 🔢 SMART CARD NUMBER MATCHING (With Prefix Forgiveness)
-    has_card_num = False
-    db_num_only = re.sub(r'[^0-9]', '', card_num_token)
-
-    if len(card_num_token) > 1:
-        stripped_title = re.sub(r'[\s\-]', '', title_lower)
-        stripped_num = re.sub(r'[\s\-]', '', card_num_token)
-        # Matches if the full prefix matches, OR if just the numerical digits match a token in the title
-        has_card_num = (stripped_num in stripped_title) or (db_num_only in title_words)
-    elif len(card_num_token) == 1:
-        has_card_num = card_num_token in title_words
-
-    # 4. 🗂️ STRICT SERIES WORDS MATCHING
+    # 3. 🗂️ STRICT SERIES WORDS MATCHING
     has_series = False
     if series_clean and series_clean != "base":
         series_words = series_clean.split()
@@ -144,16 +130,16 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     else:
         has_series = True
 
-    if not (has_card_num or has_series): 
+    if not has_series: 
         return None
 
-    # 5. Check for specific parallel variants FIRST
+    # 4. Check for specific parallel variants FIRST
     base_variant_id = None
     matched_variant_id = None
 
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
     
-    # 🛡️ THE FIX: Broader catch for default insert-set variants if "Base" is missing
+    # 🛡️ Broader catch for default insert-set variants if "Base" is missing
     default_variant_names = ["base", "silver", "holo", "base holo", "standard", "unnumbered", "raw"]
 
     for variant in sorted_variants:
@@ -171,7 +157,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             matched_variant_id = variant['id']
             break
 
-    # 6. FALLBACK TO BASE
+    # 5. FALLBACK TO BASE
     if matched_variant_id:
         return matched_variant_id
     elif base_variant_id:
