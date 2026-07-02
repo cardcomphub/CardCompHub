@@ -94,7 +94,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-# 🛡️ THE SMART CLASSIFIER (Strict Word-Bound Matcher)
+# 🛡️ THE SMART CLASSIFIER (Strict Word-Bound Matcher + Fallback Upgrades)
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants):
     title_lower = ebay_title.lower()
     
@@ -123,21 +123,23 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if not all(part in title_words for part in player_parts): 
         return None
 
-    # 3. 🔢 SMART CARD NUMBER MATCHING
+    # 3. 🔢 SMART CARD NUMBER MATCHING (With Prefix Forgiveness)
     has_card_num = False
+    db_num_only = re.sub(r'[^0-9]', '', card_num_token)
+
     if len(card_num_token) > 1:
         stripped_title = re.sub(r'[\s\-]', '', title_lower)
         stripped_num = re.sub(r'[\s\-]', '', card_num_token)
-        has_card_num = stripped_num in stripped_title
+        # Matches if the full prefix matches, OR if just the numerical digits match a token in the title
+        has_card_num = (stripped_num in stripped_title) or (db_num_only in title_words)
     elif len(card_num_token) == 1:
         has_card_num = card_num_token in title_words
 
-    # 4. 🗂️ THE FIX: STRICT SERIES WORDS MATCHING
+    # 4. 🗂️ STRICT SERIES WORDS MATCHING
     has_series = False
     if series_clean and series_clean != "base":
         series_words = series_clean.split()
         # Requires EVERY SINGLE WORD of the series checklist string to exist as a discrete token in the title
-        # This blocks "Hidden Potential" listings from hitting your "Hidden Potential Autographs" table
         has_series = all(word in title_words for word in series_words)
     else:
         has_series = True
@@ -149,12 +151,16 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     base_variant_id = None
     matched_variant_id = None
 
-    # Sort variants so longer names evaluate before short names
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
+    
+    # 🛡️ THE FIX: Broader catch for default insert-set variants if "Base" is missing
+    default_variant_names = ["base", "silver", "holo", "base holo", "standard", "unnumbered", "raw"]
 
     for variant in sorted_variants:
         v_name = variant['variant_name'].lower().strip()
-        if v_name == "base":
+        
+        # Grab the fallback ID if it matches any standard default naming convention
+        if v_name in default_variant_names and base_variant_id is None:
             base_variant_id = variant['id']
             continue
 
