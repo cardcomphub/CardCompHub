@@ -187,4 +187,117 @@ def run_pipeline(target_year, target_brand, target_series):
 
     variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
 
-    set_response = supabase.table("card_sets").select("id").eq("
+    set_response = supabase.table("card_sets").select("id").eq("year", target_year).eq("brand", target_brand).eq("series", target_series).execute()
+
+    if not set_response.data:
+        print("❌ Set not found in database. Exiting matrix job.")
+        return
+
+    target_set_id = set_response.data[0]['id']
+
+    response = supabase.table("base_cards").select(
+        "id, player_name, card_number, image_url, slug, card_variants(id, variant_name, variant_category)"
+    ).eq("set_id", target_set_id).execute()
+    cards = response.data
+
+    for card in cards:
+        clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
+
+        search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
+        raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
+
+        if not raw_comps:
+            time.sleep(1)
+            continue
+
+        if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
+            supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
+            card['image_url'] = live_card_image 
+
+        price_entries = []
+        for comp in raw_comps:
+            if comp['price'] > 10000: continue
+
+            matched_variant_id = classify_comp(
+                ebay_title=comp['title'],
+                card_year=target_year,
+                brand=target_brand,
+                series=target_series,
+                player_name=clean_player_name,
+                card_number=card['card_number'],
+                variants=card['card_variants']
+            )
+
+            if not matched_variant_id: continue
+
+            grade = "RAW"
+            if "psa 10" in comp['title'].lower(): grade = "PSA 10"
+            elif "psa 9" in comp['title'].lower(): grade = "PSA 9"
+
+            price_entries.append({
+                "variant_id": matched_variant_id,
+                "sale_price": comp['price'],
+                "sale_date": comp['date'],
+                "grade": grade,
+                "sale_image_url": comp['listing_image'] or None
+            })
+
+        if price_entries:
+            variant_groups = {}
+            for entry in price_entries:
+                vid = entry['variant_id']
+                if vid not in variant_groups: variant_groups[vid] = []
+                variant_groups[vid].append(entry)
+
+            for vid, entries in variant_groups.items():
+                if vid in variants_updated_today: continue
+
+                try:
+                    existing_comps = supabase.table("price_comps").select("sale_price, sale_date").eq("variant_id", vid).execute()
+                    existing_data = existing_comps.data or []
+                    existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in existing_data)
+
+                    # 📈 GUARDRAIL 3: Server-side Dynamic Median Evaluation
+                    historical_prices = sorted([float(c['sale_price']) for c in existing_data])
+                    median_price = 0
+                    if historical_prices:
+                        mid = len(historical_prices) // 2
+                        median_price = historical_prices[mid] if len(historical_prices) % 2 != 0 else (historical_prices[mid - 1] + historical_prices[mid]) / 2.0
+
+                    max_allowed_price = median_price * 5 if median_price > 0 else float('inf')
+
+                    unique_new_entries = []
+                    for entry in entries:
+                        sale_price = float(entry['sale_price'])
+
+                        # Defend the database against wild anomalies
+                        if median_price > 0 and sale_price > max_allowed_price:
+                            print(f"🛑 REJECTED: ${sale_price} is an extreme outlier (Limit: ${max_allowed_price:.2f})")
+                            continue
+
+                        fingerprint = f"{sale_price}_{entry['sale_date']}"
+                        if fingerprint not in existing_fingerprints:
+                            unique_new_entries.append(entry)
+                            existing_fingerprints.add(fingerprint)
+
+                    if unique_new_entries:
+                        supabase.table("price_comps").insert(unique_new_entries[:10]).execute()
+                        print(f"✅ SUCCESS: Added {len(unique_new_entries)} new sales for {clean_player_name}")
+                    else:
+                        print(f"⏩ SKIP: No new unique sales found for {clean_player_name}.")
+
+                except Exception as db_write_error:
+                    print(f"⚠️ Database write skipped: {db_write_error}")
+
+        time.sleep(1)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 4:
+        print("❌ Error: Missing matrix arguments. Usage: python update_by_set.py <year> <brand> <series>")
+        sys.exit(1)
+
+    target_year = sys.argv[1]
+    target_brand = sys.argv[2]
+    target_series = sys.argv[3]
+
+    run_pipeline(target_year, target_brand, target_series)
