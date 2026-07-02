@@ -28,9 +28,12 @@ jobs:
           from supabase import create_client
           supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
           sets = supabase.table('card_sets').select('year, brand, series').execute().data or []
-          unique = { (str(s['year']), s['brand'].strip(), s['series'].strip()) for s in sets 
-                     if not (s['brand'].strip().lower() == 'panini' and s['series'].strip().lower() == 'donruss') }
+          
+          # 🛠️ THE FIX: Removed the Panini Donruss exclusion filter
+          unique = { (str(s['year']), s['brand'].strip(), s['series'].strip()) for s in sets }
+          
           unique_list = [{'year': u[0], 'brand': u[1], 'series': u[2]} for u in unique]
+          # Grabs everything from index 144 to the end of the list
           final_list = sorted(unique_list, key=lambda x: (x['year'], x['brand']))[144:]
           matrix_json = json.dumps({'include': final_list})
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
