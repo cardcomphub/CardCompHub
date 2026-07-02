@@ -286,9 +286,9 @@ def run_pipeline(target_year, target_brand, target_series):
                         sale_price = float(entry['sale_price'])
 
                         # Defend the database against wild anomalies
-                        if median_price > 0 and sale_price > max_allowed_price:
-                            print(f"🛑 REJECTED: ${sale_price} is an extreme outlier (Limit: ${max_allowed_price:.2f})")
-                            continue
+                        #if median_price > 0 and sale_price > max_allowed_price:
+                        #    print(f"🛑 REJECTED: ${sale_price} is an extreme outlier (Limit: ${max_allowed_price:.2f})")
+                        #    continue
 
                         fingerprint = f"{sale_price}_{entry['sale_date']}"
                         if fingerprint not in existing_fingerprints:
