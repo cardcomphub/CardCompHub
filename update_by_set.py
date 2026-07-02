@@ -94,7 +94,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-# 🛡️ THE SMART CLASSIFIER (Blocklist completely removed)
+# 🛡️ THE SMART CLASSIFIER (Dynamic Fallback Safety Nets Included)
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants):
     title_lower = ebay_title.lower()
     
@@ -105,8 +105,13 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
 
     # 📚 ALIAS DICTIONARY: Map official database terms to common eBay abbreviations
     hobby_aliases = {
-        "autograph": ["autograph", "autographs", "auto", "autos"],
-        "autographs": ["autograph", "autographs", "auto", "autos"]
+        "autograph": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
+        "autographs": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
+        "signature": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
+        "signatures": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
+        "refractor": ["refractor", "refractors", "ref"],
+        "refractors": ["refractor", "refractors", "ref"],
+        "parallel": ["parallel", "parallels"]
     }
 
     # Helper engine to check if a word (or its accepted abbreviation) exists in the title
@@ -152,21 +157,27 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
 
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
     
-    # Broader catch for default insert-set variants if "Base" is missing
-    default_variant_names = ["base", "silver", "holo", "base holo", "standard", "unnumbered", "raw"]
+    # 🎯 NEW SAFETY NET 1: The "Only Child" Rule
+    if len(variants) == 1:
+        base_variant_id = variants[0]['id']
+    else:
+        default_variant_names = ["base", "silver", "holo", "base holo", "standard", "unnumbered", "raw"]
+        for variant in sorted_variants:
+            v_name = variant['variant_name'].lower().strip()
+            if (v_name in default_variant_names or v_name == series_clean) and base_variant_id is None:
+                base_variant_id = variant['id']
+                
+    # 🎯 NEW SAFETY NET 2: The "Shortest Name" Rule
+    # If a base variant STILL hasn't been identified, default to the variant with the shortest name
+    if base_variant_id is None and variants:
+        base_variant_id = sorted_variants[-1]['id']
 
+    # Now evaluate the specific variant words for exact matches
     for variant in sorted_variants:
         v_name = variant['variant_name'].lower().strip()
-        
-        # Grab the fallback ID if it matches any standard default naming convention
-        if v_name in default_variant_names and base_variant_id is None:
-            base_variant_id = variant['id']
-            continue
-
         variant_clean = re.sub(r'\(.*?\)', '', v_name).strip().replace("refractors", "refractor")
         variant_parts = variant_clean.split()
 
-        # USE ALIAS ENGINE HERE TOO
         if words_present(variant_parts, title_words):
             matched_variant_id = variant['id']
             break
