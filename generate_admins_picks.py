@@ -19,26 +19,27 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # 🎯 ADMIN SELECTION CONFIGURATION (UPGRADED)
+# 🎯 ADMIN SELECTION CONFIGURATION
 ADMIN_CHOSEN_CARDS = [
-    {
-        "slug": "2025-topps-chrome-shadow-etch-josh-allen-se2?set=2025-topps-chrome-shadow-etch",
-        "variant": "Gold Refractor" 
-    },
-    {
-        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-cam-ward-stn1?set=2025-topps-cosmic-chrome-football-stars-in-the-night",
-        "variant": "Base"
-    },
-    {
-        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-jaxson-dart-stn2?set=2025-topps-cosmic-chrome-football-stars-in-the-night",
-        "variant": "Base"
-    },
     {
         "slug": "2025-topps-chrome-xs-and-whoas-dylan-harper-xw9",
         "variant": "Base"
     },
     {
+        "slug": "2025-topps-chrome-shadow-etch-josh-allen-se2",
+        "variant": "Gold Refractor" 
+    },
+    {
+        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-cam-ward-stn1",
+        "variant": "Base"
+    },
+    {
+        "slug": "2025-topps-cosmic-chrome-stars-in-the-night-jaxson-dart-stn2",
+        "variant": "Base"
+    },
+    {
         "slug": "2026-topps-series-1-1991-topps-baseball-autographs-jacob-misiorowski-91amis",
-        "variant": "Base" # Corrected to "Base" to find the autograph tier properly
+        "variant": "Base" 
     }
 ]
 
