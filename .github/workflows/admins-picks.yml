@@ -1,0 +1,25 @@
+name: Run Admin Picks Generator
+
+on:
+  workflow_dispatch: # 🎯 This enables the manual "Run workflow" button in GitHub
+
+jobs:
+  generate-editorial:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install Dependencies
+        run: pip install supabase openai
+        
+      - name: Run Admin Picks Script
+        run: python generate_admins_picks.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
