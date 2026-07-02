@@ -1,7 +1,8 @@
 import os
 import json
 import re
-from datetime import datetime, timezone, timedelta
+import sys
+from datetime import datetime, timezone
 from supabase import create_client, Client
 from openai import OpenAI
 
@@ -22,100 +23,94 @@ def generate_slug(title):
     clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', title).strip().lower()
     return re.sub(r'[\s-]+', '-', clean_title)
 
-def fetch_market_movers():
-    print("📊 Pulling latest market data from Supabase Materialized View...")
+def fetch_hottest_movers():
+    print("📊 Pulling top trending market assets from Hottest Players Leaderboard...")
     
-    # Grab the top 3 highest percentage gainers (Minimum $5 floor and 5 recent sales to filter out junk)
-    gainers_response = supabase.table("hottest_players_leaderboard") \
-        .select("player_name, current_floor, past_floor, percentage_change, recent_sales_volume, series, brand, year") \
-        .gte("current_floor", 5) \
-        .gte("recent_sales_volume", 5) \
-        .order("percentage_change", desc=True) \
-        .limit(3) \
+    # Fetch the top 5 absolute movers based on your custom hype_score engine
+    response = supabase.table("hottest_players_leaderboard") \
+        .select("player_name, current_floor, past_floor, percentage_change, recent_sales_volume, hype_score, series, brand, year, image_url") \
+        .order("hype_score", desc=True) \
+        .limit(5) \
         .execute()
 
-    # Grab the top 3 biggest losers
-    losers_response = supabase.table("hottest_players_leaderboard") \
-        .select("player_name, current_floor, past_floor, percentage_change, recent_sales_volume, series, brand, year") \
-        .gte("past_floor", 10) \
-        .gte("recent_sales_volume", 5) \
-        .order("percentage_change", desc=False) \
-        .limit(3) \
-        .execute()
+    return response.data
 
-    return gainers_response.data, losers_response.data
-
-def generate_article(gainers, losers):
-    print("🧠 Handing data to OpenAI for Markdown generation...")
+def generate_article(movers_data):
+    print("🧠 Processing metrics and generating dated Markdown report via OpenAI...")
     
-    date_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
-    
-    # Convert database arrays into formatted text for the prompt
-    gainers_text = json.dumps(gainers, indent=2)
-    losers_text = json.dumps(losers, indent=2)
+    # Capture the exact execution date to anchor the AI's temporal writing
+    current_date_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    movers_payload = json.dumps(movers_data, indent=2)
 
     prompt = f"""
-    You are an elite sports card market analyst writing for CardCompHub. Write a highly engaging, SEO-optimized weekly market report in Markdown format.
+    You are an elite sports card market macro-analyst writing for CardCompHub. 
+    Write a comprehensive, deeply analytical weekly market report in Markdown format.
     
-    Use the following real market data from our tracking engine.
+    Current Report Date: {current_date_str}
     
-    Top Gainers:
-    {gainers_text}
+    Top Leaderboard Movers Data:
+    {movers_payload}
     
-    Biggest Losers:
-    {losers_text}
+    Strict Editorial Guidelines:
+    1. INCORPORATE DATES: You must explicitly include calendar dates and temporal context directly into your prose (e.g., "During the week ending {current_date_str}...", "Comparing late-month transaction data to prior baselines...", "As of {current_date_str}..."). Do not let the data float without temporal anchors.
+    2. VARIANT SKEW AWARENESS: Note that past astronomical percentage spikes (e.g., thousands of percent) were often tracking noise caused by high-end autographed parallels or low-pop serial-numbered variants mixed into base card transaction data. This report evaluates newly stabilized, apples-to-apples baseline floor prices.
+    3. JSON STRUCTURE: Return a JSON object containing exactly three keys: "title", "meta_description", and "content".
     
     Formatting Rules:
-    - Return a JSON object with exactly three keys: "title", "meta_description", and "content".
-    - "title" should be a catchy, SEO-friendly headline (e.g., "Market Watch: [Player Name] Surges 105% while [Player Name] Plummets").
-    - "meta_description" should be under 160 characters.
-    - "content" must be beautifully formatted Markdown. Use ## headers for each player, bold their exact price movements, and analyze why their market is moving (mention their team, recent real-world performance, or hobby hype).
-    - Maintain a professional, analytical, yet hype-driven tone.
+    - "title": A sharp, highly clickable SEO headline focusing on the week's dominant market trends.
+    - "meta_description": Under 160 characters for clean Google snippet rendering.
+    - "content": Clean Markdown. Use ## headers for each prominent athlete, bold their precise price movements, and give context behind their volume adjustments.
     """
 
     response = ai_client.chat.completions.create(
         model="gpt-4o",
         response_format={ "type": "json_object" },
         messages=[
-            {"role": "system", "content": "You output strict JSON combining SEO metadata and Markdown article content."},
+            {"role": "system", "content": "You output strict JSON schema combining clean meta descriptions and dated Markdown content blocks."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.7
     )
 
-    # Parse the returned JSON payload
     raw_content = response.choices[0].message.content
     return json.loads(raw_content)
 
-def publish_to_supabase(article_data):
-    print("🚀 Publishing article to Supabase...")
+def publish_to_supabase(article_data, movers_data):
+    print("🚀 Transmitting final layout to database...")
     
     title = article_data.get("title")
     slug = f"{generate_slug(title)}-{datetime.now(timezone.utc).strftime('%m-%d-%y')}"
     
+    # 📸 Feature Image Pipeline: Extract the image_url of the #1 trending card on the leaderboard
+    feature_image_url = None
+    if movers_data and len(movers_data) > 0:
+        feature_image_url = movers_data[0].get("image_url")
+
     payload = {
         "title": title,
         "slug": slug,
         "content": article_data.get("content"),
         "meta_description": article_data.get("meta_description"),
+        "feature_image": feature_image_url, 
         "is_published": True
     }
     
-    # Insert straight into your blog table
     supabase.table("blog_posts").insert(payload).execute()
-    print(f"✅ Successfully published: {title}")
-    print(f"🔗 URL Slug: /{slug}")
+    print(f"✅ SUCCESS: Article published live!")
+    print(f"🔗 Target Path: /blog/{slug}")
+    if feature_image_url:
+        print(f"🖼️ Linked Feature Image: {feature_image_url}")
 
 if __name__ == "__main__":
     try:
-        gainers, losers = fetch_market_movers()
+        movers = fetch_hottest_movers()
         
-        if not gainers or not losers:
-            print("⏩ Not enough active market data to generate a report today. Skipping.")
+        if not movers:
+            print("⏩ Leaderboard payload empty. Checking index connections. Skipping run.")
             sys.exit(0)
             
-        article = generate_article(gainers, losers)
-        publish_to_supabase(article)
+        article = generate_article(movers)
+        publish_to_supabase(article, movers)
         
     except Exception as e:
-        print(f"❌ Pipeline failed: {e}")
+        print(f"❌ Content generation pipeline failed: {e}")
