@@ -109,7 +109,11 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     hobby_aliases = {
         "autograph": ["autograph", "autographs", "auto", "autos"],
         "autographs": ["autograph", "autographs", "auto", "autos"],
-        "autographed": ["autograph", "autographs", "auto", "autos"]
+        "autographed": ["autograph", "autographs", "auto", "autos"],
+        "auto": ["autograph", "autographs", "auto", "autos"],
+        "autos": ["autograph", "autographs", "auto", "autos"],
+        "material": ["materials"],
+        "materials": ["material"]
             }
 
     # Helper engine to check if a word (or its accepted abbreviation) exists in the title
