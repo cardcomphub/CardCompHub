@@ -45,6 +45,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
             price_text = price_el.text.strip().upper()
 
             if "SHOP ON EBAY" in title.upper() or not title: continue
+            
+            # HTML parsing for player name locally
             if player_last_name and player_last_name not in title.lower(): continue
 
             # 🛡️ GUARDRAIL 2: Hard-skip any foreign currency text strings that slip through
@@ -94,8 +96,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-# 🛡️ THE SMART CLASSIFIER (Dynamic Fallback Safety Nets Included)
-def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants):
+# 🛡️ THE SMART CLASSIFIER (With Hybrid 80-Character Override Logic)
+def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants, is_extreme_length):
     title_lower = ebay_title.lower()
     
     # Replace non-alphanumeric with spaces, then collapse multiple spaces into one
@@ -103,16 +105,12 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     title_alphanum = re.sub(r'\s+', ' ', title_alphanum).strip()
     title_words = set(title_alphanum.split())
 
-    # 📚 ALIAS DICTIONARY: Map official database terms to common eBay abbreviations
+    # 📚 ALIAS DICTIONARY: Protected list (only Autograph variants)
     hobby_aliases = {
-        "autograph": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
-        "autographs": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
-        "signature": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
-        "signatures": ["autograph", "autographs", "auto", "autos", "signature", "signatures", "sign", "signs"],
-        "refractor": ["refractor", "refractors", "ref"],
-        "refractors": ["refractor", "refractors", "ref"],
-        "parallel": ["parallel", "parallels"]
-    }
+        "autograph": ["autograph", "autographs", "auto", "autos"],
+        "autographs": ["autograph", "autographs", "auto", "autos"],
+        "autographed": ["autograph", "autographs", "auto", "autos"]
+            }
 
     # Helper engine to check if a word (or its accepted abbreviation) exists in the title
     def words_present(required_words, pool):
@@ -122,72 +120,50 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
                 return False
         return True
 
-    # 🧱 GENERATE THE UN-SPLIT EXACT TOKENS
-    year_token = str(card_year).strip()
-    
-    brand_token = re.sub(r'[^a-z0-9\s]', ' ', brand.lower())
-    brand_token = re.sub(r'\s+', ' ', brand_token).strip()
-    
-    series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
-    series_clean = re.sub(r'\s+', ' ', series_clean).strip()
-
-    # 1. 🗓️ STRICT YEAR ENFORCEMENT
-    if year_token not in title_words:
-        return None
-
-    # 2. 👤 PLAYER NAME ENFORCEMENT
+    # 1. 👤 EXACT PLAYER NAME ENFORCEMENT
     player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
     if not all(part in title_words for part in player_parts): 
         return None
 
-    # 3. 🗂️ STRICT SERIES WORDS MATCHING (Using the Alias Engine)
-    has_series = False
-    if series_clean and series_clean != "base":
-        series_words = series_clean.split()
-        has_series = words_present(series_words, title_words)
-    else:
-        has_series = True
+    # 2. 🗂️ STRICT SERIES MATCHING (Bypassed if URL limit was exceeded)
+    if not is_extreme_length:
+        series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
+        series_clean = re.sub(r'\s+', ' ', series_clean).strip()
+        
+        if series_clean and series_clean != "base":
+            series_words = series_clean.split()
+            if not words_present(series_words, title_words):
+                return None
 
-    if not has_series: 
-        return None
-
-    # 4. Check for specific parallel variants FIRST
-    base_variant_id = None
+    # 3. 🔍 VARIANT SEARCH
     matched_variant_id = None
-
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
-    
-    # 🎯 NEW SAFETY NET 1: The "Only Child" Rule
-    if len(variants) == 1:
-        base_variant_id = variants[0]['id']
-    else:
-        default_variant_names = ["base", "silver", "holo", "base holo", "standard", "unnumbered", "raw"]
-        for variant in sorted_variants:
-            v_name = variant['variant_name'].lower().strip()
-            if (v_name in default_variant_names or v_name == series_clean) and base_variant_id is None:
-                base_variant_id = variant['id']
-                
-    # 🎯 NEW SAFETY NET 2: The "Shortest Name" Rule
-    # If a base variant STILL hasn't been identified, default to the variant with the shortest name
-    if base_variant_id is None and variants:
-        base_variant_id = sorted_variants[-1]['id']
 
-    # Now evaluate the specific variant words for exact matches
     for variant in sorted_variants:
         v_name = variant['variant_name'].lower().strip()
         variant_clean = re.sub(r'\(.*?\)', '', v_name).strip().replace("refractors", "refractor")
         variant_parts = variant_clean.split()
 
+        # Skip testing if it's named "base" to prevent false positive matching on generic titles
+        if v_name in ["base", "standard", "raw", "unnumbered"]:
+            continue
+
         if words_present(variant_parts, title_words):
             matched_variant_id = variant['id']
             break
 
-    # 5. FALLBACK TO BASE (No blocklist interference)
+    # 4. 🟢 ROUTING & FALLBACK
     if matched_variant_id:
         return matched_variant_id
-    elif base_variant_id:
-        # Straight shot: If it hit the player/series tokens but no specific variant, dump it into the default tier
-        return base_variant_id
+        
+    # FALLBACK: If it hit the player name but no specific variant was found, dump to Base tier.
+    if variants:
+        base_match = next((v['id'] for v in variants if v['variant_name'].lower().strip() == 'base'), None)
+        if base_match:
+            return base_match
+        
+        # Absolute last resort fallback to shortest string length
+        return sorted_variants[-1]['id']
 
     return None
 
@@ -218,7 +194,20 @@ def run_pipeline(target_year, target_brand, target_series):
     for card in cards:
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
-        search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
+        # ⚖️ Calculate Theoretical Length
+        max_variant_len = max([len(v['variant_name']) for v in card['card_variants']]) if card['card_variants'] else 0
+        theoretical_length = len(f"{target_year} {target_brand} {target_series} {clean_player_name}") + max_variant_len + 1
+        
+        is_extreme_length = theoretical_length > 80
+
+        # ✂️ DYNAMIC URL GENERATION
+        if is_extreme_length:
+            # Drop player name from eBay search; rely on proxy feed to parse HTML
+            search_term = f"{target_year} {target_brand} {target_series}"
+        else:
+            # Safe to use full standard search
+            search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
+
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
 
         if not raw_comps:
@@ -240,7 +229,8 @@ def run_pipeline(target_year, target_brand, target_series):
                 series=target_series,
                 player_name=clean_player_name,
                 card_number=card['card_number'],
-                variants=card['card_variants']
+                variants=card['card_variants'],
+                is_extreme_length=is_extreme_length # 🎯 Pass the flag
             )
 
             if not matched_variant_id: continue
@@ -272,7 +262,7 @@ def run_pipeline(target_year, target_brand, target_series):
                     existing_data = existing_comps.data or []
                     existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in existing_data)
 
-                    # 📈 GUARDRAIL 3: Server-side Dynamic Median Evaluation
+                    # 📈 Server-side Dynamic Median Evaluation
                     historical_prices = sorted([float(c['sale_price']) for c in existing_data])
                     median_price = 0
                     if historical_prices:
@@ -284,13 +274,8 @@ def run_pipeline(target_year, target_brand, target_series):
                     unique_new_entries = []
                     for entry in entries:
                         sale_price = float(entry['sale_price'])
-
-                        # Defend the database against wild anomalies
-                        #if median_price > 0 and sale_price > max_allowed_price:
-                        #    print(f"🛑 REJECTED: ${sale_price} is an extreme outlier (Limit: ${max_allowed_price:.2f})")
-                        #    continue
-
                         fingerprint = f"{sale_price}_{entry['sale_date']}"
+                        
                         if fingerprint not in existing_fingerprints:
                             unique_new_entries.append(entry)
                             existing_fingerprints.add(fingerprint)
