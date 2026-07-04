@@ -15,7 +15,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# We still use these as starting points, but the AI will confirm the actual sport
+# We use these as starting points to crawl links
 BECKETT_URLS = {
     "MLB": "https://www.beckett.com/news/category/baseball/",
     "NBA": "https://www.beckett.com/news/category/basketball/",
@@ -33,24 +33,22 @@ def extract_data_with_ai(article_url):
         response = requests.get('http://api.scraperapi.com', params=proxy_params)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 1. Extract Text
         text_content = soup.get_text(separator='\n', strip=True)[:10000]
         
-        # 2. Extract Images (Filter out logos, ads, and tiny icons)
         images = []
         for img in soup.find_all('img'):
             src = img.get('src')
             if src and src.startswith('http') and not src.endswith('.gif') and 'logo' not in src.lower():
                 images.append(src)
         
-        # 3. Prompt the AI Journalist
+        # 🎯 STRICT GATEKEEPER PROMPT: Forces AI to filter out non-core sports
         system_prompt = """
-        You are an expert sports card journalist. I will provide the raw HTML text from a product announcement and a list of image URLs found on the page.
+        You are an expert sports card journalist and data auditor. I will provide the raw HTML text from a product announcement and a list of image URLs.
         
         Extract the details and return ONLY a valid JSON object matching this exact schema:
         {
             "set_name": "Clean product name (e.g., '2026 Topps Chrome Baseball')",
-            "sport": "Determine the sport: 'MLB', 'NBA', 'NFL', or 'Other'",
+            "sport": "Determine the sport. You MUST choose exactly one of these four options: 'MLB', 'NBA', 'NFL', or 'OTHER'. If the set is Hockey (NHL), Soccer, Racing, UFC, Wrestling, Golf, or Non-Sport (like VeeFriends, Marvel, Star Wars, Garbage Pail Kids), you MUST output 'OTHER'.",
             "release_date": "YYYY-MM-DD string, or 'TBD' if unknown",
             "status": "'Scheduled', 'Delayed', or 'TBD'",
             "hits": ["Array of strings", "e.g., '2 Autographs', '1 Memorabilia Card'"],
@@ -77,6 +75,8 @@ def extract_data_with_ai(article_url):
         return None
 
 def sync_beckett_releases():
+    processed_urls = set()
+    
     for default_sport, url in BECKETT_URLS.items():
         print(f"\n{'='*50}")
         print(f"📡 Crawling {default_sport} category via ScraperAPI...")
@@ -90,9 +90,6 @@ def sync_beckett_releases():
             print(f"❌ Failed to fetch {default_sport} HTML: {e}")
             continue
         
-        # Track URLs to avoid scraping the same article twice
-        processed_urls = set()
-        
         for a_tag in soup.find_all('a'):
             href = a_tag.get('href')
             title = a_tag.get_text().strip()
@@ -102,10 +99,6 @@ def sync_beckett_releases():
                 
             title_lower = title.lower()
             
-            # 🎯 STRICT FILTERING: 
-            # 1. Must contain "details" or "checklist"
-            # 2. Must contain a modern year (2024, 2025, 2026, 2027)
-            # 3. Must NOT be a generic overview page
             is_valid_topic = 'details' in title_lower or 'checklist' in title_lower
             has_modern_year = re.search(r'202[4-9]', title)
             is_not_garbage = 'guide' not in title_lower and 'upcoming' not in title_lower and 'index' not in title_lower
@@ -122,27 +115,37 @@ def sync_beckett_releases():
                 if not ai_data:
                     continue
                 
+                # 🎯 AI FILTERING: Drop anything that isn't NFL, NBA, or MLB
+                final_sport = ai_data.get("sport", "OTHER").upper()
+                if final_sport not in ["MLB", "NBA", "NFL"]:
+                    print(f"  ⏭️ SKIPPED: '{title}' was categorized as '{final_sport}'.")
+                    continue
+                
                 db_date = None
                 if ai_data.get("release_date") and ai_data["release_date"] != "TBD":
                     db_date = ai_data["release_date"]
                 
-                # Use the AI's sport determination, falling back to the category default
-                final_sport = ai_data.get("sport") if ai_data.get("sport") in ["MLB", "NBA", "NFL"] else default_sport
+                # 🎯 GENERATE SEO SLUG
+                raw_name = ai_data.get("set_name", title)
+                clean_slug = re.sub(r'[^a-z0-9\s-]', '', raw_name.lower()).strip()
+                clean_slug = re.sub(r'[\s-]+', '-', clean_slug)
                     
                 release_data = {
-                    "set_name": ai_data.get("set_name", title),
+                    "set_name": raw_name,
+                    "slug": clean_slug,
                     "sport": final_sport,
                     "release_date": db_date,
                     "status": ai_data.get("status", "Scheduled"),
                     "hits": ai_data.get("hits", []),
-                    "image_urls": ai_data.get("image_urls", []), # Note: Now passing the JSON array
-                    "article_body": ai_data.get("article_body", ""), # Note: The full HTML blog post
+                    "image_urls": ai_data.get("image_urls", []), 
+                    "article_body": ai_data.get("article_body", ""), 
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }
                 
                 try:
-                    supabase.table("card_releases").upsert(release_data, on_conflict="set_name").execute()
-                    print(f"  ✅ SAVED: {release_data['set_name']} | Sport: {final_sport} | Images: {len(release_data['image_urls'])}")
+                    # 🎯 Save to Supabase using the unique slug for conflict resolution
+                    supabase.table("card_releases").upsert(release_data, on_conflict="slug").execute()
+                    print(f"  ✅ SAVED: {raw_name} | Sport: {final_sport} | Slug: {clean_slug}")
                 except Exception as e:
                     print(f"  ❌ DB ERROR for '{title}': {e}")
 
