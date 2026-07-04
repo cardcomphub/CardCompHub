@@ -49,11 +49,6 @@ def fetch_ebay_via_proxy(search_query, player_name):
             # HTML parsing for player name locally
             if player_last_name and player_last_name not in title.lower(): continue
 
-            # 🛡️ GUARDRAIL 2: Hard-skip any foreign currency text strings that slip through
-            foreign_currencies = ["MXN", "C $", "AU $", "EUR", "£", "GBP", "CAD"]
-            if any(foreign in price_text for foreign in foreign_currencies):
-                continue
-
             # 📸 Image Extraction
             image_el = item.find('img')
             listing_specific_img = None
@@ -64,9 +59,9 @@ def fetch_ebay_via_proxy(search_query, player_name):
             if listing_specific_img and not first_discovered_image:
                 first_discovered_image = listing_specific_img
 
-            # 💰 Price Parsing
-            clean_price = price_text.split('TO')[0]
-            price_match = re.search(r'\d+(?:\.\d{2})?', clean_price.replace(',', ''))
+            # 💰 NEW Price Parsing: Anchor strictly to the dollar sign
+            # This ignores "HKD 6,470.39" and jumps straight to capturing "825.00" from "US $825.00"
+            price_match = re.search(r'\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)', price_text)
 
             # 🗓️ THE DATE FIX: Target the exact eBay HTML class for sold dates
             parsed_date = datetime.now(timezone.utc).isoformat()
@@ -85,12 +80,16 @@ def fetch_ebay_via_proxy(search_query, player_name):
                     pass
 
             if price_match:
+                # Strip commas from the captured regex group before converting to float
+                clean_price = float(price_match.group(1).replace(',', ''))
+                
                 parsed_comps.append({
                     "title": title, 
-                    "price": float(price_match.group()),
+                    "price": clean_price,
                     "date": parsed_date,
                     "listing_image": listing_specific_img
                 })
+                
         return parsed_comps, first_discovered_image
     except Exception as e:
         print(f"❌ Proxy pipeline network anomaly: {e}")
@@ -199,109 +198,4 @@ def run_pipeline(target_year, target_brand, target_series):
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
         # ⚖️ Calculate Theoretical Length
-        max_variant_len = max([len(v['variant_name']) for v in card['card_variants']]) if card['card_variants'] else 0
-        theoretical_length = len(f"{target_year} {target_brand} {target_series} {clean_player_name}") + max_variant_len + 1
-        
-        is_extreme_length = theoretical_length > 80
-
-        # ✂️ DYNAMIC URL GENERATION
-        if is_extreme_length:
-            # Drop player name from eBay search; rely on proxy feed to parse HTML
-            search_term = f"{target_year} {target_brand} {target_series}"
-        else:
-            # Safe to use full standard search
-            search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
-
-        raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
-
-        if not raw_comps:
-            time.sleep(1)
-            continue
-
-        if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
-            supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
-            card['image_url'] = live_card_image 
-
-        price_entries = []
-        for comp in raw_comps:
-            if comp['price'] > 10000: continue
-
-            matched_variant_id = classify_comp(
-                ebay_title=comp['title'],
-                card_year=target_year,
-                brand=target_brand,
-                series=target_series,
-                player_name=clean_player_name,
-                card_number=card['card_number'],
-                variants=card['card_variants'],
-                is_extreme_length=is_extreme_length # 🎯 Pass the flag
-            )
-
-            if not matched_variant_id: continue
-
-            grade = "RAW"
-            if "psa 10" in comp['title'].lower(): grade = "PSA 10"
-            elif "psa 9" in comp['title'].lower(): grade = "PSA 9"
-
-            price_entries.append({
-                "variant_id": matched_variant_id,
-                "sale_price": comp['price'],
-                "sale_date": comp['date'],
-                "grade": grade,
-                "sale_image_url": comp['listing_image'] or None
-            })
-
-        if price_entries:
-            variant_groups = {}
-            for entry in price_entries:
-                vid = entry['variant_id']
-                if vid not in variant_groups: variant_groups[vid] = []
-                variant_groups[vid].append(entry)
-
-            for vid, entries in variant_groups.items():
-                if vid in variants_updated_today: continue
-
-                try:
-                    existing_comps = supabase.table("price_comps").select("sale_price, sale_date").eq("variant_id", vid).execute()
-                    existing_data = existing_comps.data or []
-                    existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in existing_data)
-
-                    # 📈 Server-side Dynamic Median Evaluation
-                    historical_prices = sorted([float(c['sale_price']) for c in existing_data])
-                    median_price = 0
-                    if historical_prices:
-                        mid = len(historical_prices) // 2
-                        median_price = historical_prices[mid] if len(historical_prices) % 2 != 0 else (historical_prices[mid - 1] + historical_prices[mid]) / 2.0
-
-                    max_allowed_price = median_price * 5 if median_price > 0 else float('inf')
-
-                    unique_new_entries = []
-                    for entry in entries:
-                        sale_price = float(entry['sale_price'])
-                        fingerprint = f"{sale_price}_{entry['sale_date']}"
-                        
-                        if fingerprint not in existing_fingerprints:
-                            unique_new_entries.append(entry)
-                            existing_fingerprints.add(fingerprint)
-
-                    if unique_new_entries:
-                        supabase.table("price_comps").insert(unique_new_entries[:10]).execute()
-                        print(f"✅ SUCCESS: Added {len(unique_new_entries)} new sales for {clean_player_name}")
-                    else:
-                        print(f"⏩ SKIP: No new unique sales found for {clean_player_name}.")
-
-                except Exception as db_write_error:
-                    print(f"⚠️ Database write skipped: {db_write_error}")
-
-        time.sleep(1)
-
-if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        print("❌ Error: Missing matrix arguments. Usage: python update_by_set.py <year> <brand> <series>")
-        sys.exit(1)
-
-    target_year = sys.argv[1]
-    target_brand = sys.argv[2]
-    target_series = sys.argv[3]
-
-    run_pipeline(target_year, target_brand, target_series)
+        max_variant_len = max([len(v['variant_name']) for v in card['card_variants']]) if card['
