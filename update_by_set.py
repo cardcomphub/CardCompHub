@@ -56,11 +56,12 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 listing_specific_img = image_el.get('data-src') or image_el.get('src') or image_el.get('data-delayed-src')
                 if listing_specific_img and ("gif" in listing_specific_img or "placeholder" in listing_specific_img):
                     listing_specific_img = None
+            
+            # Lock in the very first valid image found for the master card record
             if listing_specific_img and not first_discovered_image:
                 first_discovered_image = listing_specific_img
 
             # 💰 NEW Price Parsing: Anchor strictly to the dollar sign
-            # This ignores "HKD 6,470.39" and jumps straight to capturing "825.00" from "US $825.00"
             price_match = re.search(r'\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)', price_text)
 
             # 🗓️ THE DATE FIX: Target the exact eBay HTML class for sold dates
@@ -80,7 +81,6 @@ def fetch_ebay_via_proxy(search_query, player_name):
                     pass
 
             if price_match:
-                # Strip commas from the captured regex group before converting to float
                 clean_price = float(price_match.group(1).replace(',', ''))
                 
                 parsed_comps.append({
@@ -95,16 +95,15 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-# 🛡️ THE SMART CLASSIFIER (With Hybrid 80-Character Override Logic)
+
+# 🛡️ THE SMART CLASSIFIER 
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants, is_extreme_length):
     title_lower = ebay_title.lower()
     
-    # Replace non-alphanumeric with spaces, then collapse multiple spaces into one
     title_alphanum = re.sub(r'[^a-z0-9\s]', ' ', title_lower)
     title_alphanum = re.sub(r'\s+', ' ', title_alphanum).strip()
     title_words = set(title_alphanum.split())
 
-    # 📚 ALIAS DICTIONARY: Protected list (only Autograph variants)
     hobby_aliases = {
         "autograph": ["autograph", "autographs", "auto", "autos"],
         "autographs": ["autograph", "autographs", "auto", "autos"],
@@ -113,9 +112,8 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
         "autos": ["autograph", "autographs", "auto", "autos"],
         "material": ["materials"],
         "materials": ["material"]
-            }
+    }
 
-    # Helper engine to check if a word (or its accepted abbreviation) exists in the title
     def words_present(required_words, pool):
         for w in required_words:
             allowed_forms = hobby_aliases.get(w, [w])
@@ -128,7 +126,13 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if not all(part in title_words for part in player_parts): 
         return None
 
-    # 2. 🗂️ STRICT SERIES MATCHING (Bypassed if URL limit was exceeded)
+    # 🎯 2. STRICT YEAR ENFORCEMENT
+    found_years = re.findall(r'\b(202[0-9])\b', title_lower)
+    if found_years and str(card_year) not in found_years:
+        print(f"  ⏭️ YEAR MISMATCH SKIPPED: Listing year {found_years} doesn't match matrix target {card_year}")
+        return None
+
+    # 3. 🗂️ STRICT SERIES MATCHING 
     if not is_extreme_length:
         series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
         series_clean = re.sub(r'\s+', ' ', series_clean).strip()
@@ -138,7 +142,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             if not words_present(series_words, title_words):
                 return None
 
-    # 3. 🔍 VARIANT SEARCH
+    # 4. 🔍 VARIANT SEARCH
     matched_variant_id = None
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
 
@@ -147,7 +151,6 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
         variant_clean = re.sub(r'\(.*?\)', '', v_name).strip().replace("refractors", "refractor")
         variant_parts = variant_clean.split()
 
-        # Skip testing if it's named "base" to prevent false positive matching on generic titles
         if v_name in ["base", "standard", "raw", "unnumbered"]:
             continue
 
@@ -155,17 +158,15 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             matched_variant_id = variant['id']
             break
 
-    # 4. 🟢 ROUTING & FALLBACK
+    # 5. 🟢 ROUTING & FALLBACK
     if matched_variant_id:
         return matched_variant_id
         
-    # FALLBACK: If it hit the player name but no specific variant was found, dump to Base tier.
     if variants:
         base_match = next((v['id'] for v in variants if v['variant_name'].lower().strip() == 'base'), None)
         if base_match:
             return base_match
         
-        # Absolute last resort fallback to shortest string length
         return sorted_variants[-1]['id']
 
     return None
@@ -205,10 +206,8 @@ def run_pipeline(target_year, target_brand, target_series):
 
         # ✂️ DYNAMIC URL GENERATION
         if is_extreme_length:
-            # Drop player name from eBay search; rely on proxy feed to parse HTML
             search_term = f"{target_year} {target_brand} {target_series}"
         else:
-            # Safe to use full standard search
             search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
 
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
@@ -217,9 +216,18 @@ def run_pipeline(target_year, target_brand, target_series):
             time.sleep(1)
             continue
 
-        if live_card_image and ("placeholder" in card.get('image_url', '') or not card.get('image_url')):
-            supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
-            card['image_url'] = live_card_image 
+        # 📸 MASTER IMAGE UPDATE LOGIC
+        if live_card_image:
+            current_image = card.get('image_url') or ""
+            # Update only if empty or if it contains a placeholder indicator
+            if not current_image or "placeholder" in current_image.lower() or "default" in current_image.lower():
+                try:
+                    # Updates the 'image_url' column in the 'base_cards' table specifically
+                    supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
+                    print(f"  📸 Updated master card image for {clean_player_name}")
+                    card['image_url'] = live_card_image 
+                except Exception as img_err:
+                    print(f"  ⚠️ Failed to update master image in Supabase: {img_err}")
 
         price_entries = []
         for comp in raw_comps:
@@ -233,7 +241,7 @@ def run_pipeline(target_year, target_brand, target_series):
                 player_name=clean_player_name,
                 card_number=card['card_number'],
                 variants=card['card_variants'],
-                is_extreme_length=is_extreme_length # 🎯 Pass the flag
+                is_extreme_length=is_extreme_length 
             )
 
             if not matched_variant_id: continue
