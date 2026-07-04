@@ -1,4 +1,3 @@
-import feedparser
 import re
 import os
 import requests
@@ -16,10 +15,11 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-BECKETT_FEEDS = {
-    "MLB": "https://www.beckett.com/news/category/baseball/feed/",
-    "NBA": "https://www.beckett.com/news/category/basketball/feed/",
-    "NFL": "https://www.beckett.com/news/category/football/feed/"
+# 🎯 THE FIX: Changed from /feed/ to the standard HTML category pages
+BECKETT_CATEGORIES = {
+    "MLB": "https://www.beckett.com/news/category/baseball/",
+    "NBA": "https://www.beckett.com/news/category/basketball/",
+    "NFL": "https://www.beckett.com/news/category/football/"
 }
 
 def extract_data_with_ai(article_url):
@@ -29,23 +29,18 @@ def extract_data_with_ai(article_url):
         
     try:
         print(f"    🔍 Scraping & Analyzing article...")
-        # 1. Fetch the raw HTML via ScraperAPI
         proxy_params = {'api_key': SCRAPER_API_KEY, 'url': article_url}
         response = requests.get('http://api.scraperapi.com', params=proxy_params)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 2. Extract Text (truncate to save tokens, first 10,000 chars is plenty)
         text_content = soup.get_text(separator='\n', strip=True)[:10000]
         
-        # 3. Extract all potential image URLs to give the AI options for the pack art
         images = []
         for img in soup.find_all('img'):
             src = img.get('src')
-            # Filter out tiny icons, gifs, and base64 junk
             if src and src.startswith('http') and not src.endswith('.gif'):
                 images.append(src)
         
-        # 4. Prompt the AI to do the heavy lifting
         system_prompt = """
         You are an expert sports card data extractor. I will provide the raw text of an article announcing a new sports card set, along with a list of image URLs found on the page.
         
@@ -61,7 +56,7 @@ def extract_data_with_ai(article_url):
         user_content = f"ARTICLE TEXT:\n{text_content}\n\nIMAGE URLs FOUND:\n{json.dumps(images[:15])}"
 
         completion = ai_client.chat.completions.create(
-            model="gpt-4o-mini", # Fast, cheap, and highly capable for this
+            model="gpt-4o-mini",
             response_format={ "type": "json_object" },
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -69,10 +64,8 @@ def extract_data_with_ai(article_url):
             ]
         )
         
-        # 5. Parse the AI response
         ai_data = json.loads(completion.choices[0].message.content)
         
-        # Format date for the database
         db_date = None
         if ai_data.get("release_date") and ai_data["release_date"] != "TBD":
             db_date = ai_data["release_date"]
@@ -89,41 +82,44 @@ def extract_data_with_ai(article_url):
         return {"release_date": None, "status": "Scheduled", "image_url": None, "hits": []}
 
 def sync_beckett_releases():
-    # A standard User-Agent so Beckett doesn't instantly block our direct RSS request
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-
-    for sport, feed_url in BECKETT_FEEDS.items():
+    for sport, category_url in BECKETT_CATEGORIES.items():
         print(f"\n{'='*40}")
-        print(f"📡 Fetching {sport} feed from Beckett...")
+        print(f"📡 Fetching {sport} category page from Beckett...")
         
-        # 🎯 THE FIX: Fetch the RSS feed directly. Do NOT use ScraperAPI for XML feeds.
+        # 🎯 THE FIX: Scrape the HTML directly using ScraperAPI
+        proxy_params = {'api_key': SCRAPER_API_KEY, 'url': category_url}
         try:
-            response = requests.get(feed_url, headers=headers, timeout=15)
-            parsed_feed = feedparser.parse(response.content)
+            response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=45)
+            soup = BeautifulSoup(response.text, 'html.parser')
+        except Exception as e:
+            print(f"❌ Failed to fetch {sport} page: {e}")
+            continue
             
-            if not parsed_feed.entries:
-                print(f"⚠️ Warning: No entries found for {sport}. The feed might be temporarily blocked or empty.")
+        seen_links = set()
+        
+        # Hunt for all article links on the page
+        for a_tag in soup.find_all('a'):
+            title = a_tag.get_text(strip=True)
+            link = a_tag.get('href', '')
+            
+            # Skip empty links, non-urls, or duplicates
+            if not title or not link.startswith('http') or link in seen_links:
                 continue
                 
-        except Exception as e:
-            print(f"❌ Failed to fetch {sport} feed: {e}")
-            continue
-        
-        for entry in parsed_feed.entries:
-            title = entry.title
             title_lower = title.lower()
             
+            # Filter for release/checklist articles
             if "details" in title_lower or "checklist" in title_lower or "release" in title_lower:
                 if "release dates" in title_lower and "information" in title_lower:
                     continue
+                    
+                seen_links.add(link) # Prevent scraping the same article twice
                 
                 clean_set_name = re.sub(r'(?i)(checklist|details|release date|team set lists|guide|image gallery|and|,|-).*', '', title).strip()
                 print(f"👀 Found: {clean_set_name}")
                 
                 # Hand it off to the AI Pipeline
-                ai_data = extract_data_with_ai(entry.link)
+                ai_data = extract_data_with_ai(link)
                 
                 release_data = {
                     "set_name": clean_set_name,
@@ -137,7 +133,7 @@ def sync_beckett_releases():
                 
                 try:
                     supabase.table("card_releases").upsert(release_data, on_conflict="set_name").execute()
-                    print(f"  ✅ SAVED: {clean_set_name} | Hits Found: {len(ai_data['hits'])}")
+                    print(f"  ✅ SAVED: {clean_set_name} | Date: {ai_data['release_date']} | Hits: {len(ai_data['hits'])}")
                 except Exception as e:
                     print(f"  ❌ DB ERROR for '{clean_set_name}': {e}")
 
