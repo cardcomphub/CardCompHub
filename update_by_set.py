@@ -171,8 +171,9 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
 
     return None
 
-def run_pipeline(target_year, target_brand, target_series):
-    print(f"🚀 Running sync for Matrix Target: {target_year} {target_brand} {target_series}...")
+# 🎯 THE FIX: Added 'target_sport' to the function parameters
+def run_pipeline(target_year, target_brand, target_series, target_sport):
+    print(f"🚀 Running sync for Matrix Target: {target_year} {target_brand} {target_series} ({target_sport})...")
     today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     today_comps_response = supabase.table("price_comps") \
@@ -182,7 +183,13 @@ def run_pipeline(target_year, target_brand, target_series):
 
     variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
 
-    set_response = supabase.table("card_sets").select("id").eq("year", target_year).eq("brand", target_brand).eq("series", target_series).execute()
+    # 🎯 THE FIX: Added .eq("sport", target_sport) to isolate the exact set correctly
+    set_response = supabase.table("card_sets").select("id")\
+        .eq("year", target_year)\
+        .eq("brand", target_brand)\
+        .eq("series", target_series)\
+        .eq("sport", target_sport)\
+        .execute()
 
     if not set_response.data:
         print("❌ Set not found in database. Exiting matrix job.")
@@ -302,13 +309,15 @@ def run_pipeline(target_year, target_brand, target_series):
 
         time.sleep(1)
 
+# 🎯 THE FIX: Ensure sys.argv checks for 5 arguments and captures sport
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        print("❌ Error: Missing matrix arguments. Usage: python update_by_set.py <year> <brand> <series>")
+    if len(sys.argv) < 5:
+        print("❌ Error: Missing matrix arguments. Usage: python update_by_set.py <year> <brand> <series> <sport>")
         sys.exit(1)
 
     target_year = sys.argv[1]
     target_brand = sys.argv[2]
     target_series = sys.argv[3]
+    target_sport = sys.argv[4]
 
-    run_pipeline(target_year, target_brand, target_series)
+    run_pipeline(target_year, target_brand, target_series, target_sport)
