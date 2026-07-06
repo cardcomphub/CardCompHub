@@ -15,8 +15,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          
       - name: Install Supabase
-        run: pip install supabase
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir supabase
+          
       - name: Fetch Sets (Part A)
         id: set-matrix
         env:
@@ -27,13 +31,16 @@ jobs:
           import os, json
           from supabase import create_client
           supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-          sets = supabase.table('card_sets').select('year, brand, series').execute().data or []
           
-          # 🛠️ THE FIX: Removed the restrictive 'if not' condition to ensure no sets are skipped
-          unique = { (str(s['year']), s['brand'].strip(), s['series'].strip()) for s in sets }
+          # 🎯 THE FIX 1: Fetch 'sport' from Supabase
+          sets = supabase.table('card_sets').select('year, brand, series, sport').execute().data or []
           
-          unique_list = [{'year': u[0], 'brand': u[1], 'series': u[2]} for u in unique]
-          final_list = sorted(unique_list, key=lambda x: (x['year'], x['brand']))[:144]
+          # 🎯 THE FIX 2: Add 'sport' to the tuple so cross-sport sets aren't overwritten
+          unique = { (str(s['year']), s['brand'].strip(), s['series'].strip(), str(s.get('sport', ''))) for s in sets }
+          
+          unique_list = [{'year': u[0], 'brand': u[1], 'series': u[2], 'sport': u[3]} for u in unique]
+          # Grabs the first 144 items
+          final_list = sorted(unique_list, key=lambda x: (x['year'], x['brand'], x['sport']))[:144]
           matrix_json = json.dumps({'include': final_list})
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'matrix={matrix_json}\n')
@@ -47,8 +54,14 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - run: pip install requests beautifulsoup4 supabase aiohttp
-      - run: python update_by_set.py "${{ matrix.year }}" "${{ matrix.brand }}" "${{ matrix.series }}"
+      
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir requests beautifulsoup4 supabase aiohttp
+          
+      # 🎯 THE FIX 3: Pass the sport as a 4th argument to your scraper script
+      - run: python update_by_set.py "${{ matrix.year }}" "${{ matrix.brand }}" "${{ matrix.series }}" "${{ matrix.sport }}"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
