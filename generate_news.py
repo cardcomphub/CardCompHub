@@ -21,23 +21,34 @@ if not SUPABASE_URL.startswith("http"):
     SUPABASE_URL = f"https://{SUPABASE_URL}"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# 🔥 THE FIX: Initialize the new, official Google GenAI client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 def fetch_espn_news():
-    print("📊 Pulling top breaking story from ESPN NBA RSS feed...")
-    feed = feedparser.parse('https://www.espn.com/espn/rss/nba/news')
+    # 🔥 THE FIX: A rotating matrix of feeds. If one is empty, it tries the next automatically.
+    feeds_to_try = [
+        {"name": "NBA News", "url": "https://www.espn.com/espn/rss/nba/news"},
+        {"name": "Top Headlines", "url": "https://www.espn.com/espn/rss/news"},
+        {"name": "NFL News", "url": "https://www.espn.com/espn/rss/nfl/news"},
+        {"name": "MLB News", "url": "https://www.espn.com/espn/rss/mlb/news"}
+    ]
     
-    if not feed.entries:
-        return None
-        
-    top_story = feed.entries[0]
-    return {
-        "title": top_story.title,
-        "summary": top_story.summary,
-        "link": top_story.link
-    }
+    for feed_info in feeds_to_try:
+        print(f"📊 Attempting to pull breaking story from ESPN {feed_info['name']}...")
+        try:
+            feed = feedparser.parse(feed_info["url"])
+            if feed.entries and len(feed.entries) > 0:
+                top_story = feed.entries[0]
+                print(f"✅ Found breaking story in {feed_info['name']}: {top_story.title}")
+                return {
+                    "title": top_story.title,
+                    "summary": top_story.summary if hasattr(top_story, 'summary') else "Breaking sports update.",
+                    "link": top_story.link
+                }
+        except Exception as e:
+            print(f"⚠️ Failed reading {feed_info['name']}: {e}. Trying next fallback...")
+            continue
+            
+    return None
 
 def fetch_unsplash_image(headline):
     print("📸 Fetching dynamic feature image from Unsplash...")
@@ -72,11 +83,10 @@ def generate_article(news_data):
     - Output MUST be strict JSON with three exact keys: "title", "subtitle", "body". Do not use markdown blocks.
     
     Here is the current breaking news from ESPN:
-    Headline: "{news_data['title']}"
-    Details: "{news_data['summary']}"
+    Headline: "${news_data['title']}"
+    Details: "${news_data['summary']}"
     """
 
-    # 🔥 THE FIX: Using the new SDK's structural generation syntax
     response = ai_client.models.generate_content(
         model='gemini-2.5-flash',
         contents=prompt,
@@ -100,7 +110,7 @@ def publish_to_supabase(article_data, image_url, espn_link):
         "espn_source_link": espn_link
     }
     
-    response = supabase.table("hobby_articles").insert(payload).execute()
+    supabase.table("hobby_articles").insert(payload).execute()
     print(f"✅ SUCCESS: Article published live!")
     print(f"📰 Headline: {payload['title']}")
 
@@ -109,7 +119,7 @@ if __name__ == "__main__":
         story = fetch_espn_news()
         
         if not story:
-            print("⏩ ESPN feed empty or unreachable. Skipping run.")
+            print("❌ All ESPN fallback feeds are currently empty or unreachable. Skipping run.")
             sys.exit(0)
             
         image_url = fetch_unsplash_image(story["title"])
