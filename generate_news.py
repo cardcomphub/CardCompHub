@@ -1,10 +1,10 @@
 import os
 import json
-import re
 import sys
 import requests
 import feedparser
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from supabase import create_client, Client
 
 # 🔐 WORKER AUTHENTICATION
@@ -17,12 +17,13 @@ if not all([SUPABASE_URL, SUPABASE_KEY, GEMINI_API_KEY, UNSPLASH_ACCESS_KEY]):
     raise ValueError("❌ Execution failed: Missing required environment variables.")
 
 # 🔌 INITIALIZE CLIENTS
-# Ensure Supabase URL has https:// prefix
 if not SUPABASE_URL.startswith("http"):
     SUPABASE_URL = f"https://{SUPABASE_URL}"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
+
+# 🔥 THE FIX: Initialize the new, official Google GenAI client
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 def fetch_espn_news():
     print("📊 Pulling top breaking story from ESPN NBA RSS feed...")
@@ -40,7 +41,6 @@ def fetch_espn_news():
 
 def fetch_unsplash_image(headline):
     print("📸 Fetching dynamic feature image from Unsplash...")
-    # Extract first two words for a clean search query
     search_words = " ".join(headline.split(" ")[:2])
     search_query = f"{search_words} sports"
     
@@ -65,7 +65,7 @@ def generate_article(news_data):
     Your task is to take a real-time breaking sports news headline and write a highly engaging, 3-paragraph article about how this specific real-world event will impact the player's trading card values.
     
     Rules:
-    - Paragraph 1: Hook the reader by summarizing the real-world sports news (e.g., trade rumors, injuries, historic performances, team switching).
+    - Paragraph 1: Hook the reader by summarizing the real-world sports news.
     - Paragraph 2: Dive into the hobby economics. Mention specific flagship cards. Discuss "market size multipliers" or performance hype.
     - Paragraph 3: Give a final "Verdict" (Buy, Sell, or Hold) with a quick justification.
     - Tone: Exciting, analytical, modern, and engaging.
@@ -76,11 +76,13 @@ def generate_article(news_data):
     Details: "{news_data['summary']}"
     """
 
-    # Force JSON output via generation_config
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
+    # 🔥 THE FIX: Using the new SDK's structural generation syntax
+    response = ai_client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+        ),
     )
 
     raw_content = response.text.replace("```json", "").replace("```", "").strip()
@@ -101,7 +103,6 @@ def publish_to_supabase(article_data, image_url, espn_link):
     response = supabase.table("hobby_articles").insert(payload).execute()
     print(f"✅ SUCCESS: Article published live!")
     print(f"📰 Headline: {payload['title']}")
-    print(f"🖼️ Linked Feature Image: {image_url}")
 
 if __name__ == "__main__":
     try:
