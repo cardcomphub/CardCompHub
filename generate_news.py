@@ -24,18 +24,30 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 def fetch_espn_news():
-    # 🔥 THE FIX: A rotating matrix of feeds. If one is empty, it tries the next automatically.
+    # 🔥 THE FIX 1: Diverse Sports Network Matrix
     feeds_to_try = [
-        {"name": "NBA News", "url": "https://www.espn.com/espn/rss/nba/news"},
-        {"name": "Top Headlines", "url": "https://www.espn.com/espn/rss/news"},
-        {"name": "NFL News", "url": "https://www.espn.com/espn/rss/nfl/news"},
-        {"name": "MLB News", "url": "https://www.espn.com/espn/rss/mlb/news"}
+        {"name": "Yahoo Sports NBA", "url": "https://sports.yahoo.com/nba/rss/"},
+        {"name": "ESPN NBA News", "url": "https://www.espn.com/espn/rss/nba/news"},
+        {"name": "CBS Sports NFL", "url": "https://www.cbssports.com/rss/headlines/nfl/"},
+        {"name": "ESPN Top Headlines", "url": "https://www.espn.com/espn/rss/news"}
     ]
     
+    # 🔥 THE FIX 2: Chrome Stealth Headers to bypass Datacenter Firewalls
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    }
+    
     for feed_info in feeds_to_try:
-        print(f"📊 Attempting to pull breaking story from ESPN {feed_info['name']}...")
+        print(f"📊 Attempting to pull breaking story from {feed_info['name']}...")
         try:
-            feed = feedparser.parse(feed_info["url"])
+            # Fetch the raw XML through requests first to inject the stealth header
+            response = requests.get(feed_info["url"], headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # Feed the raw XML into feedparser
+            feed = feedparser.parse(response.content)
+            
             if feed.entries and len(feed.entries) > 0:
                 top_story = feed.entries[0]
                 print(f"✅ Found breaking story in {feed_info['name']}: {top_story.title}")
@@ -44,6 +56,8 @@ def fetch_espn_news():
                     "summary": top_story.summary if hasattr(top_story, 'summary') else "Breaking sports update.",
                     "link": top_story.link
                 }
+            else:
+                print(f"⚠️ {feed_info['name']} returned XML but no entries. Trying next fallback...")
         except Exception as e:
             print(f"⚠️ Failed reading {feed_info['name']}: {e}. Trying next fallback...")
             continue
@@ -82,9 +96,9 @@ def generate_article(news_data):
     - Tone: Exciting, analytical, modern, and engaging.
     - Output MUST be strict JSON with three exact keys: "title", "subtitle", "body". Do not use markdown blocks.
     
-    Here is the current breaking news from ESPN:
-    Headline: "${news_data['title']}"
-    Details: "${news_data['summary']}"
+    Here is the current breaking news:
+    Headline: "{news_data['title']}"
+    Details: "{news_data['summary']}"
     """
 
     response = ai_client.models.generate_content(
@@ -110,7 +124,7 @@ def publish_to_supabase(article_data, image_url, espn_link):
         "espn_source_link": espn_link
     }
     
-    supabase.table("hobby_articles").insert(payload).execute()
+    response = supabase.table("hobby_articles").insert(payload).execute()
     print(f"✅ SUCCESS: Article published live!")
     print(f"📰 Headline: {payload['title']}")
 
@@ -119,7 +133,7 @@ if __name__ == "__main__":
         story = fetch_espn_news()
         
         if not story:
-            print("❌ All ESPN fallback feeds are currently empty or unreachable. Skipping run.")
+            print("❌ All fallback feeds are currently empty or blocked. Skipping run.")
             sys.exit(0)
             
         image_url = fetch_unsplash_image(story["title"])
