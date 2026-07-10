@@ -101,8 +101,9 @@ def generate_article(news_data):
     Details: "{news_data['summary']}"
     """
 
+    # 🔥 THE FIX: Use the globally available 1.5 Pro model
     response = ai_client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-pro', # <--- CHANGE THIS EXACT LINE
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
