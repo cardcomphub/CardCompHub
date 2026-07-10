@@ -119,15 +119,16 @@ def generate_editorial_article(picks_data):
     - "content": Clean Markdown text. Use ## headers for each card, bold exact price points, embed the image below the header, and write detailed, narrative paragraphs.
     """
 
-    response = ai_client.chat.completions.create(
+     response = ai_client.chat.completions.create(
         model="gpt-4o",
         response_format={ "type": "json_object" },
         messages=[
-            {"role": "system", "content": "You output professional sports card portfolio analysis wrapped in strict JSON format."},
+            {"role": "system", "content": "You output strict JSON schema combining clean meta descriptions and dated Markdown content blocks."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.75
+        temperature=0.7
     )
+
 
     raw_content = response.choices[0].message.content
     return json.loads(raw_content)
