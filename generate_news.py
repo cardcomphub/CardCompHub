@@ -3,6 +3,7 @@ import json
 import sys
 import requests
 import feedparser
+import re # 🔥 NEW: Imported for string manipulation
 from openai import OpenAI
 from supabase import create_client, Client
 
@@ -114,11 +115,22 @@ def generate_article(news_data):
     raw_content = response.choices[0].message.content
     return json.loads(raw_content)
 
+# 🔥 NEW: URL Slug generator function
+def generate_slug(text):
+    # Convert to lowercase, remove anything that isn't a letter or number, and replace spaces with hyphens
+    slug = re.sub(r'[^a-z0-9]+', '-', text.lower())
+    # Strip any trailing or leading hyphens just in case
+    return slug.strip('-')
+
 def publish_to_supabase(article_data, image_url, source_link):
     print("🚀 Transmitting final layout to hobby_articles database...")
     
+    title = article_data.get("title", "Breaking News")
+    slug = generate_slug(title) # Generates the slug right before uploading
+    
     payload = {
-        "title": article_data.get("title"),
+        "title": title,
+        "slug": slug, # 🔥 NEW: Added to the payload
         "subtitle": article_data.get("subtitle"),
         "body": article_data.get("body"),
         "image_url": image_url,
@@ -129,6 +141,7 @@ def publish_to_supabase(article_data, image_url, source_link):
     supabase.table("hobby_articles").insert(payload).execute()
     print(f"✅ SUCCESS: Article published live!")
     print(f"📰 Headline: {payload['title']}")
+    print(f"🔗 URL Slug: {slug}")
 
 if __name__ == "__main__":
     try:
