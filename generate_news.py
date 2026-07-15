@@ -27,10 +27,10 @@ ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 def fetch_sports_news():
     feeds_to_try = [
-        {"name": "ESPN Top Headlines", "url": "https://www.espn.com/espn/rss/news"}
+        {"name": "ESPN Top Headlines", "url": "https://www.espn.com/espn/rss/news"},
         {"name": "ESPN NBA News", "url": "https://www.espn.com/espn/rss/nba/news"},
         {"name": "Yahoo Sports NBA", "url": "https://sports.yahoo.com/nba/rss/"},
-        {"name": "CBS Sports NFL", "url": "https://www.cbssports.com/rss/headlines/nfl/"},
+        {"name": "CBS Sports NFL", "url": "https://www.cbssports.com/rss/headlines/nfl/"}
     ]
     
     headers = {
