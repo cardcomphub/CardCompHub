@@ -7,7 +7,9 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from supabase import create_client, Client
 
-# 🔐 WORKER AUTHENTICATION
+# ==============================================================================
+# 🔐 WORKER AUTHENTICATION & SETUP
+# ==============================================================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY")
@@ -17,6 +19,9 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ==============================================================================
+# 📡 EBAY PROXY SCRAPER
+# ==============================================================================
 def fetch_ebay_via_proxy(search_query, player_name):
     print(f"📡 Routing proxy query for: '{search_query}'...")
     encoded_query = search_query.replace(" ", "+")
@@ -24,6 +29,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
     # 🇺🇸 GUARDRAIL 1: Force a US IP address to prevent foreign currency conversion glitches
     proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us'}
+    
     try:
         response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
         if response.status_code != 200: return [], None
@@ -46,7 +52,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
             if "SHOP ON EBAY" in title.upper() or not title: continue
             
-            # HTML parsing for player name locally
+            # Basic pre-filter for player name
             if player_last_name and player_last_name not in title.lower(): continue
 
             # 📸 Image Extraction
@@ -57,19 +63,17 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 if listing_specific_img and ("gif" in listing_specific_img or "placeholder" in listing_specific_img):
                     listing_specific_img = None
             
-            # Lock in the very first valid image found for the master card record
             if listing_specific_img and not first_discovered_image:
                 first_discovered_image = listing_specific_img
 
-            # 💰 NEW Price Parsing: Anchor strictly to the dollar sign
+            # 💰 Price Parsing: Anchor strictly to the dollar sign to avoid shipping/conversion aggregation
             price_match = re.search(r'\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)', price_text)
 
-            # 🗓️ THE DATE FIX: Target the exact eBay HTML class for sold dates
+            # 🗓️ Date Parsing: Target the exact eBay HTML class for sold dates
             parsed_date = datetime.now(timezone.utc).isoformat()
             positive_span = item.find("span", class_=lambda x: x and 'POSITIVE' in x.upper())
             date_text = positive_span.text.strip() if positive_span else item.text
 
-            # Regex captures: Sold Apr 16, 2026 OR Sold Jun 2
             date_match = re.search(r'(?:Sold|Ended)\s*([A-Za-z]{3})\s+(\d{1,2})(?:,\s*(\d{4}))?', date_text, re.IGNORECASE)
             if date_match:
                 month = date_match.group(1)
@@ -82,7 +86,6 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
             if price_match:
                 clean_price = float(price_match.group(1).replace(',', ''))
-                
                 parsed_comps.append({
                     "title": title, 
                     "price": clean_price,
@@ -95,8 +98,9 @@ def fetch_ebay_via_proxy(search_query, player_name):
         print(f"❌ Proxy pipeline network anomaly: {e}")
         return [], None
 
-
-# 🛡️ THE SMART CLASSIFIER 
+# ==============================================================================
+# 🛡️ THE SMART CLASSIFIER (Includes Strict Brand & Year Enforcement)
+# ==============================================================================
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants, is_extreme_length):
     title_lower = ebay_title.lower()
     
@@ -126,14 +130,22 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if not all(part in title_words for part in player_parts): 
         return None
 
-    # 🎯 2. STRICT YEAR ENFORCEMENT
+    # 2. 🎯 STRICT YEAR ENFORCEMENT
     found_years = re.findall(r'\b(202[0-9])\b', title_lower)
     if found_years and str(card_year) not in found_years:
-        print(f"  ⏭️ YEAR MISMATCH SKIPPED: Listing year {found_years} doesn't match matrix target {card_year}")
         return None
 
-    # 3. 🗂️ STRICT SERIES MATCHING 
-    if not is_extreme_length:
+    # 3. 🛑 STRICT BRAND ENFORCEMENT
+    if brand:
+        brand_clean = re.sub(r'[^a-z0-9\s]', ' ', brand.lower())
+        brand_clean = re.sub(r'\s+', ' ', brand_clean).strip()
+        if brand_clean:
+            brand_words = brand_clean.split()
+            if not words_present(brand_words, title_words):
+                return None
+
+    # 4. 🗂️ STRICT SERIES MATCHING 
+    if not is_extreme_length and series:
         series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
         series_clean = re.sub(r'\s+', ' ', series_clean).strip()
         
@@ -142,7 +154,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             if not words_present(series_words, title_words):
                 return None
 
-    # 4. 🔍 VARIANT SEARCH
+    # 5. 🔍 VARIANT SEARCH
     matched_variant_id = None
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
 
@@ -158,7 +170,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             matched_variant_id = variant['id']
             break
 
-    # 5. 🟢 ROUTING & FALLBACK
+    # 6. 🟢 ROUTING & FALLBACK
     if matched_variant_id:
         return matched_variant_id
         
@@ -166,12 +178,13 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
         base_match = next((v['id'] for v in variants if v['variant_name'].lower().strip() == 'base'), None)
         if base_match:
             return base_match
-        
         return sorted_variants[-1]['id']
 
     return None
 
-# 🎯 THE FIX: Added 'target_sport' to the function parameters
+# ==============================================================================
+# 🚀 CORE PIPELINE RUNNER
+# ==============================================================================
 def run_pipeline(target_year, target_brand, target_series, target_sport):
     print(f"🚀 Running sync for Matrix Target: {target_year} {target_brand} {target_series} ({target_sport})...")
     today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -183,7 +196,7 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
 
     variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
 
-    # 🎯 THE FIX: Added .eq("sport", target_sport) to isolate the exact set correctly
+    # 🎯 Ensure sport is strictly queried to prevent baseball/football cross-contamination
     set_response = supabase.table("card_sets").select("id")\
         .eq("year", target_year)\
         .eq("brand", target_brand)\
@@ -200,6 +213,7 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
     response = supabase.table("base_cards").select(
         "id, player_name, card_number, image_url, slug, card_variants(id, variant_name, variant_category)"
     ).eq("set_id", target_set_id).execute()
+    
     cards = response.data
 
     for card in cards:
@@ -226,10 +240,8 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
         # 📸 MASTER IMAGE UPDATE LOGIC
         if live_card_image:
             current_image = card.get('image_url') or ""
-            # Update only if empty or if it contains a placeholder indicator
             if not current_image or "placeholder" in current_image.lower() or "default" in current_image.lower():
                 try:
-                    # Updates the 'image_url' column in the 'base_cards' table specifically
                     supabase.table("base_cards").update({"image_url": live_card_image}).eq("id", card["id"]).execute()
                     print(f"  📸 Updated master card image for {clean_player_name}")
                     card['image_url'] = live_card_image 
@@ -238,7 +250,7 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
 
         price_entries = []
         for comp in raw_comps:
-            if comp['price'] > 10000: continue
+            if comp['price'] > 10000: continue # Reject obvious outlier junk listings
 
             matched_variant_id = classify_comp(
                 ebay_title=comp['title'],
@@ -278,6 +290,8 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                 try:
                     existing_comps = supabase.table("price_comps").select("sale_price, sale_date").eq("variant_id", vid).execute()
                     existing_data = existing_comps.data or []
+                    
+                    # Create a strict fingerprint to block identical sales caused by currency conversions
                     existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in existing_data)
 
                     # 📈 Server-side Dynamic Median Evaluation
@@ -292,6 +306,11 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                     unique_new_entries = []
                     for entry in entries:
                         sale_price = float(entry['sale_price'])
+                        
+                        # Block massive algorithmic outliers
+                        if median_price > 0 and sale_price > max_allowed_price:
+                            continue
+                            
                         fingerprint = f"{sale_price}_{entry['sale_date']}"
                         
                         if fingerprint not in existing_fingerprints:
@@ -309,8 +328,8 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
 
         time.sleep(1)
 
-# 🎯 THE FIX: Ensure sys.argv checks for 5 arguments and captures sport
 if __name__ == "__main__":
+    # Ensure sys.argv checks for all 5 arguments to accurately trigger the sport isolator
     if len(sys.argv) < 5:
         print("❌ Error: Missing matrix arguments. Usage: python update_by_set.py <year> <brand> <series> <sport>")
         sys.exit(1)
