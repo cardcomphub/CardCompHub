@@ -40,7 +40,7 @@ jobs:
           
           unique_list = [{'year': u[0], 'brand': u[1], 'series': u[2], 'sport': u[3]} for u in unique]
           # Grabs everything from index 144 to the end of the list
-          final_list = sorted(unique_list, key=lambda x: (x['year'], x['brand'], x['sport']))[144:]
+          final_list = sorted(unique_list, key=lambda x: (x['year'], x['brand'], x['sport']))[220:]
           matrix_json = json.dumps({'include': final_list})
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'matrix={matrix_json}\n')
