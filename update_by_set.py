@@ -18,6 +18,14 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# 🛠️ HELPER: Safely evaluate BeautifulSoup classes to prevent list/string crashes
+def has_partial_class(classes, keyword):
+    if not classes:
+        return False
+    if isinstance(classes, str):
+        return keyword in classes.lower()
+    return any(keyword in str(c).lower() for c in classes)
+
 def fetch_ebay_via_proxy(search_query, player_name):
     clean_query = search_query.replace("'", "").replace("’", "")
     print(f"📡 Routing proxy query for: '{clean_query}'...")
@@ -25,31 +33,32 @@ def fetch_ebay_via_proxy(search_query, player_name):
     encoded_query = clean_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
 
-    # 🇺🇸 THE FIX: Added 'premium': 'true' to use Residential Proxies and bypass the eBay Login Wall
+    # 🇺🇸 THE BROWSER FIX: Force Residential Proxies + Headless Chrome JS Execution
     proxy_params = {
         'api_key': SCRAPER_API_KEY, 
         'url': ebay_url, 
-        'country_code': 'us', 
+        'country_code': 'us',
         'device_type': 'desktop',
-        'premium': 'true' 
+        'premium': 'true',
+        'render': 'true' 
     }
     
-    # 🎯 Anti-Captcha / Anti-Login Wall Auto-Retry Loop
+    # 🎯 Anti-Login Wall Auto-Retry Loop
     for attempt in range(3):
         try:
-            response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=60)
+            # ⏳ BUMPED TIMEOUT TO 90 SECONDS because Headless Browsers take slightly longer
+            response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=90)
             if response.status_code != 200: 
                 continue
 
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            listings = soup.find_all(lambda tag: tag.name in ['li', 'div'] and tag.get('class') and any('s-item' in c or 's-card' in c for c in tag.get('class')))
+            listings = soup.find_all(class_=lambda x: has_partial_class(x, 's-item') or has_partial_class(x, 's-card'))
 
-            # Intercept empty pages and check for eBay bot-blockers or login walls
             if not listings:
                 html_lower = response.text.lower()
                 if "captcha" in html_lower or "verify you are a human" in html_lower or "signin.ebay.com" in html_lower or "sign in to view" in html_lower:
-                    print(f"  🛑 eBay Login/Captcha Wall hit. Retrying with fresh Residential IP ({attempt+1}/3)...")
+                    print(f"  🛑 eBay Login Wall hit. Retrying with fresh Residential IP ({attempt+1}/3)...")
                     time.sleep(3)
                     continue
                 else:
@@ -64,8 +73,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
             player_last_name = core_parts[-1] if core_parts else ""
 
             for item in listings:
-                title_el = item.find(class_=lambda c: c and 'title' in str(c).lower() and 'subtitle' not in str(c).lower())
-                price_el = item.find(class_=lambda c: c and 'price' in str(c).lower())
+                title_el = item.find(class_=lambda c: has_partial_class(c, 'title') and not has_partial_class(c, 'subtitle'))
+                price_el = item.find(class_=lambda c: has_partial_class(c, 'price'))
 
                 if not title_el or not price_el: continue
 
@@ -75,7 +84,6 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 if "SHOP ON EBAY" in title.upper() or not title: continue
                 if player_last_name and player_last_name not in title.lower(): continue
 
-                # 🆔 THE DEDUPLICATION FIX
                 ebay_id = None
                 for a_tag in item.find_all('a', href=True):
                     href = a_tag['href']
@@ -86,12 +94,10 @@ def fetch_ebay_via_proxy(search_query, player_name):
                         ebay_id = id_match.group(1)
                         break
                 
-                # Synthetic Hash Fallback
                 if not ebay_id:
                     raw_str = f"{title}_{price_text}"
                     ebay_id = "SYN-" + hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:12]
 
-                # 📸 Image Extraction
                 image_el = item.find('img')
                 listing_specific_img = None
                 if image_el:
@@ -102,10 +108,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 if listing_specific_img and not first_discovered_image:
                     first_discovered_image = listing_specific_img
 
-                # 💰 Price Parsing
                 price_match = re.search(r'\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)', price_text)
 
-                # 🗓️ Date Parsing safely scans the entire text block
                 parsed_date = datetime.now(timezone.utc).isoformat()
                 date_match = re.search(r'(?:Sold|Ended)\s*([A-Za-z]{3})\s+(\d{1,2})(?:,\s*(\d{4}))?', item.get_text(separator=" "), re.IGNORECASE)
                 
@@ -136,7 +140,6 @@ def fetch_ebay_via_proxy(search_query, player_name):
     return [], None
 
 
-# 🛡️ THE SMART CLASSIFIER 
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants, is_extreme_length):
     title_lower = ebay_title.lower().replace("'", "").replace("’", "")
     
@@ -161,7 +164,6 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
                 return False
         return True
 
-    # 1. 👤 EXACT PLAYER NAME ENFORCEMENT
     player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
     suffixes = {"jr", "sr", "ii", "iii", "iv", "v"}
     core_player_parts = [p for p in player_parts if p not in suffixes]
@@ -169,12 +171,10 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if not all(part in title_words for part in core_player_parts): 
         return None
 
-    # 2. 🎯 STRICT YEAR ENFORCEMENT
     found_years = re.findall(r'\b(202[0-9])\b', title_lower)
     if found_years and str(card_year) not in found_years:
         return None
 
-    # 3. 🗂️ STRICT SERIES MATCHING (Apostrophe safe)
     if not is_extreme_length:
         series_clean = series.lower().replace("'", "").replace("’", "")
         series_clean = re.sub(r'[^a-z0-9\s]', ' ', series_clean).strip()
@@ -184,7 +184,6 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             if not words_present(series_words, title_words):
                 return None
 
-    # 4. 🔍 VARIANT SEARCH
     matched_variant_id = None
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
 
@@ -200,7 +199,6 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             matched_variant_id = variant['id']
             break
 
-    # 5. 🟢 ROUTING & FALLBACK
     if matched_variant_id:
         return matched_variant_id
         
@@ -245,7 +243,6 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
     for card in cards:
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
-        # ⚖️ Calculate Theoretical Length
         max_variant_len = max([len(v['variant_name']) for v in card['card_variants']]) if card['card_variants'] else 0
         theoretical_length = len(f"{target_year} {target_brand} {target_series} {clean_player_name}") + max_variant_len + 1
         
