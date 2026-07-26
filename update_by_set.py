@@ -18,36 +18,38 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==============================================================================
-# 📡 THE FIX: SCRAPERAPI STRUCTURED EBAY ENDPOINT
+# 📡 SCRAPERAPI STRUCTURED JSON ENDPOINT FETCHER
 # ==============================================================================
 def fetch_ebay_via_proxy(search_query, player_name):
-    # Strip apostrophes so the search engine doesn't choke on "Let's Go"
     clean_query = search_query.replace("'", "").replace("’", "")
-    print(f"📡 Routing Structured API query for: '{clean_query}'...")
+    print(f"📡 Querying ScraperAPI Structured JSON for: '{clean_query}'...")
     
-    # 🎯 Instead of parsing HTML, we ask ScraperAPI to return pure JSON
+    # Official ScraperAPI Structured Endpoint for eBay Search v2
     endpoint = "https://api.scraperapi.com/structured/ebay/search/v2"
+    
+    # Parameters matching ScraperAPI's official documentation
     params = {
         'api_key': SCRAPER_API_KEY, 
         'query': clean_query, 
         'country_code': 'us',
-        'show_only': 'completed_items,sold_items' 
+        'show_only': 'completed_items,sold_items'
     }
     
     for attempt in range(3):
         try:
-            # ⚡ Faster timeout since we are no longer rendering headless browsers
-            response = requests.get(endpoint, params=params, timeout=30)
+            response = requests.get(endpoint, params=params, timeout=45)
             if response.status_code != 200: 
+                print(f"  ❌ API Status Code: {response.status_code}")
                 continue
 
             data = response.json()
             
-            # ScraperAPI structured data places the listings in an array
-            listings = data.get("organic_results") or data.get("results") or []
+            # ScraperAPI returns structured results under organic or results fields
+            listings = data.get("organic_results") or data.get("results") or data.get("itemSummaries") or []
 
             if not listings:
-                break # Genuine 0 results found on eBay
+                print(f"  ⚠️ Structured endpoint returned 0 items for query.")
+                break
 
             parsed_comps = []
             first_discovered_image = None
@@ -64,8 +66,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 if "SHOP ON EBAY" in title.upper() or not title: continue
                 if player_last_name and player_last_name not in title.lower(): continue
 
-                # 🆔 Extract eBay ID from the URL string
-                link = item.get('link', '')
+                # 🆔 Extract eBay ID from URL or build a synthetic hash
+                link = item.get('link', '') or item.get('itemUrl', '')
                 ebay_id = None
                 id_match = re.search(r'/itm/(?:[^?]+/)?(\d{11,14})', link)
                 if not id_match:
@@ -73,37 +75,40 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 if id_match:
                     ebay_id = id_match.group(1)
                 
-                # 💰 Price Parsing
+                # 💰 Extract Price safely from Structured JSON
                 price_val = item.get('price') or item.get('extracted_price')
+                if isinstance(price_val, dict):
+                    price_val = price_val.get('value')
                 
-                # If price is a dictionary/null, look for the text string
                 if not price_val:
-                    price_str = item.get('price_string', '')
+                    price_str = str(item.get('price_string', '') or item.get('price', ''))
                     price_match = re.search(r'\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)', price_str)
                     if price_match:
                         price_val = price_match.group(1).replace(',', '')
 
                 if not price_val: continue
                 
-                # Convert price to float safely
                 if isinstance(price_val, str):
                     price_val = re.sub(r'[^\d.]', '', price_val)
-                clean_price = float(price_val)
+                
+                try:
+                    clean_price = float(price_val)
+                except ValueError:
+                    continue
 
-                # Fallback Hash for hidden URLs
                 if not ebay_id:
                     raw_str = f"{title}_{clean_price}"
                     ebay_id = "SYN-" + hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:12]
 
                 # 📸 Image Extraction
-                listing_specific_img = item.get('thumbnail') or item.get('image')
+                listing_specific_img = item.get('thumbnail') or item.get('image') or item.get('imageUrl')
                 if listing_specific_img and not first_discovered_image:
                     first_discovered_image = listing_specific_img
 
-                # 🗓️ Date Extraction fallback
+                # 🗓️ Date Extraction
                 parsed_date = datetime.now(timezone.utc).isoformat()
-                item_text_blob = str(item)
-                date_match = re.search(r'(?:Sold|Ended)\s*([A-Za-z]{3})\s+(\d{1,2})(?:,\s*(\d{4}))?', item_text_blob, re.IGNORECASE)
+                date_str = item.get('date') or item.get('sold_date') or str(item)
+                date_match = re.search(r'(?:Sold|Ended)\s*([A-Za-z]{3})\s+(\d{1,2})(?:,\s*(\d{4}))?', date_str, re.IGNORECASE)
                 
                 if date_match:
                     month = date_match.group(1)
@@ -124,7 +129,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
                     
             return parsed_comps, first_discovered_image
         except Exception as e:
-            print(f"❌ Structured Data pipeline anomaly: {e}")
+            print(f"❌ Structured endpoint network anomaly: {e}")
             
     return [], None
 
@@ -207,6 +212,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
         return sorted_variants[-1]['id']
 
     return None
+
 
 # ==============================================================================
 # 🚀 CORE PIPELINE RUNNER
