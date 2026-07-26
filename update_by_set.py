@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import time
+import hashlib
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
@@ -26,18 +27,26 @@ def fetch_ebay_via_proxy(search_query, player_name):
     proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us', 'device_type': 'desktop'}
     try:
         response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=60)
-        if response.status_code != 200: return [], None
+        if response.status_code != 200: 
+            print(f"  ❌ Proxy Error: Status Code {response.status_code}")
+            return [], None
 
         soup = BeautifulSoup(response.text, 'html.parser')
-        listings = soup.find_all(class_=lambda x: x and ('s-item' in x or 's-card' in x))
+        listings = soup.find_all(class_=re.compile(r's-item|s-card', re.I))
 
         parsed_comps = []
         first_discovered_image = None
-        player_last_name = player_name.split()[-1].lower() if player_name else ""
+        
+        # 👤 Suffix-Safe Last Name Extraction (Prevents Mahomes II from failing)
+        player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
+        suffixes = {"jr", "sr", "ii", "iii", "iv", "v"}
+        core_parts = [p for p in player_parts if p not in suffixes]
+        player_last_name = core_parts[-1] if core_parts else ""
 
         for item in listings:
-            title_el = item.find(class_=lambda x: x and 'title' in x.lower())
-            price_el = item.find(class_=lambda x: x and 'price' in x.lower())
+            # 🔥 THE FIX: Using regex instead of lambdas prevents silent list-parsing crashes
+            title_el = item.find(class_=re.compile(r'title', re.I))
+            price_el = item.find(class_=re.compile(r'price', re.I))
 
             if not title_el or not price_el: continue
 
@@ -46,8 +55,22 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
             if "SHOP ON EBAY" in title.upper() or not title: continue
             
-            # HTML parsing for player name locally
             if player_last_name and player_last_name not in title.lower(): continue
+
+            # 🆔 THE DEDUPLICATION FIX: Extract the eBay ID or create a Synthetic Hash
+            ebay_id = None
+            for a_tag in item.find_all('a', href=True):
+                href = a_tag['href']
+                id_match = re.search(r'/itm/(?:[^?]+/)?(\d{11,14})', href)
+                if not id_match:
+                    id_match = re.search(r'item(?:id)?=(\d{11,14})', href)
+                if id_match:
+                    ebay_id = id_match.group(1)
+                    break
+            
+            if not ebay_id:
+                raw_str = f"{title}_{price_text}"
+                ebay_id = "SYN-" + hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:12]
 
             # 📸 Image Extraction
             image_el = item.find('img')
@@ -57,19 +80,17 @@ def fetch_ebay_via_proxy(search_query, player_name):
                 if listing_specific_img and ("gif" in listing_specific_img or "placeholder" in listing_specific_img):
                     listing_specific_img = None
             
-            # Lock in the very first valid image found for the master card record
             if listing_specific_img and not first_discovered_image:
                 first_discovered_image = listing_specific_img
 
-            # 💰 NEW Price Parsing: Anchor strictly to the dollar sign
+            # 💰 Price Parsing
             price_match = re.search(r'\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)', price_text)
 
-            # 🗓️ THE DATE FIX: Target the exact eBay HTML class for sold dates
+            # 🗓️ Date Parsing
             parsed_date = datetime.now(timezone.utc).isoformat()
-            positive_span = item.find("span", class_=lambda x: x and 'POSITIVE' in x.upper())
+            positive_span = item.find("span", class_=re.compile(r'POSITIVE', re.I))
             date_text = positive_span.text.strip() if positive_span else item.text
 
-            # Regex captures: Sold Apr 16, 2026 OR Sold Jun 2
             date_match = re.search(r'(?:Sold|Ended)\s*([A-Za-z]{3})\s+(\d{1,2})(?:,\s*(\d{4}))?', date_text, re.IGNORECASE)
             if date_match:
                 month = date_match.group(1)
@@ -87,7 +108,8 @@ def fetch_ebay_via_proxy(search_query, player_name):
                     "title": title, 
                     "price": clean_price,
                     "date": parsed_date,
-                    "listing_image": listing_specific_img
+                    "listing_image": listing_specific_img,
+                    "ebay_id": ebay_id
                 })
                 
         return parsed_comps, first_discovered_image
@@ -121,18 +143,29 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
                 return False
         return True
 
-    # 1. 👤 EXACT PLAYER NAME ENFORCEMENT
+    # 1. 👤 EXACT PLAYER NAME ENFORCEMENT (Suffix Safe)
     player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
-    if not all(part in title_words for part in player_parts): 
+    suffixes = {"jr", "sr", "ii", "iii", "iv", "v"}
+    core_player_parts = [p for p in player_parts if p not in suffixes]
+    
+    if not all(part in title_words for part in core_player_parts): 
         return None
 
     # 🎯 2. STRICT YEAR ENFORCEMENT
     found_years = re.findall(r'\b(202[0-9])\b', title_lower)
     if found_years and str(card_year) not in found_years:
-        print(f"  ⏭️ YEAR MISMATCH SKIPPED: Listing year {found_years} doesn't match matrix target {card_year}")
         return None
 
-    # 3. 🗂️ STRICT SERIES MATCHING 
+    # 🛑 3. STRICT BRAND ENFORCEMENT
+    if brand:
+        brand_clean = re.sub(r'[^a-z0-9\s]', ' ', brand.lower())
+        brand_clean = re.sub(r'\s+', ' ', brand_clean).strip()
+        if brand_clean:
+            brand_words = brand_clean.split()
+            if not words_present(brand_words, title_words):
+                return None
+
+    # 4. 🗂️ STRICT SERIES MATCHING 
     if not is_extreme_length:
         series_clean = re.sub(r'[^a-z0-9\s]', ' ', series.lower())
         series_clean = re.sub(r'\s+', ' ', series_clean).strip()
@@ -142,7 +175,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             if not words_present(series_words, title_words):
                 return None
 
-    # 4. 🔍 VARIANT SEARCH
+    # 5. 🔍 VARIANT SEARCH
     matched_variant_id = None
     sorted_variants = sorted(variants, key=lambda v: len(v['variant_name']), reverse=True)
 
@@ -158,7 +191,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
             matched_variant_id = variant['id']
             break
 
-    # 5. 🟢 ROUTING & FALLBACK
+    # 6. 🟢 ROUTING & FALLBACK
     if matched_variant_id:
         return matched_variant_id
         
@@ -263,7 +296,8 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                 "sale_price": comp['price'],
                 "sale_date": comp['date'],
                 "grade": grade,
-                "sale_image_url": comp['listing_image'] or None
+                "sale_image_url": comp['listing_image'] or None,
+                "ebay_id": comp['ebay_id']
             })
 
         if not price_entries:
@@ -280,8 +314,11 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                 if vid in variants_updated_today: continue
 
                 try:
-                    existing_comps = supabase.table("price_comps").select("sale_price, sale_date").eq("variant_id", vid).execute()
+                    # Hybrid deduplication protecting against legacy overlapping records
+                    existing_comps = supabase.table("price_comps").select("sale_price, sale_date, ebay_id").eq("variant_id", vid).execute()
                     existing_data = existing_comps.data or []
+                    
+                    existing_ids = set(c['ebay_id'] for c in existing_data if c.get('ebay_id'))
                     existing_fingerprints = set(f"{float(c['sale_price'])}_{c['sale_date']}" for c in existing_data)
 
                     # 📈 Server-side Dynamic Median Evaluation
@@ -298,8 +335,9 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                         sale_price = float(entry['sale_price'])
                         fingerprint = f"{sale_price}_{entry['sale_date']}"
                         
-                        if fingerprint not in existing_fingerprints:
+                        if entry['ebay_id'] not in existing_ids and fingerprint not in existing_fingerprints:
                             unique_new_entries.append(entry)
+                            existing_ids.add(entry['ebay_id'])
                             existing_fingerprints.add(fingerprint)
 
                     if unique_new_entries:
