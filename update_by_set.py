@@ -248,15 +248,14 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
     for card in cards:
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
+        # ⚖️ Calculate Theoretical Length strictly for the SMART CLASSIFIER
         max_variant_len = max([len(v['variant_name']) for v in card['card_variants']]) if card['card_variants'] else 0
         theoretical_length = len(f"{target_year} {target_brand} {target_series} {clean_player_name}") + max_variant_len + 1
         
         is_extreme_length = theoretical_length > 80
 
-        if is_extreme_length:
-            search_term = f"{target_year} {target_brand} {target_series}"
-        else:
-            search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
+        # 🚨 THE FIX: Always include the player name in the actual search string
+        search_term = f"{target_year} {target_brand} {target_series} {clean_player_name}"
 
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
 
