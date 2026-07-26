@@ -33,21 +33,22 @@ def fetch_ebay_via_proxy(search_query, player_name):
     encoded_query = clean_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
 
-    # 🥷 THE ZENROWS FIX: Premium Residential Proxies + JavaScript Rendering
+    # 🥷 THE ZENROWS FIX: Activate the Anti-Bot Stealth Bypass algorithms
     proxy_params = {
         'apikey': ZENROWS_API_KEY, 
         'url': ebay_url, 
-        'js_render': 'true',
+        'antibot': 'true',
         'premium_proxy': 'true'
     }
     
     for attempt in range(3):
         try:
-            # ZenRows needs a decent timeout since it is rendering JS behind the scenes
-            response = requests.get('https://api.zenrows.com/v1/', params=proxy_params, timeout=90)
+            # ⏳ Bumped timeout to 120s because CAPTCHA solving takes time
+            response = requests.get('https://api.zenrows.com/v1/', params=proxy_params, timeout=120)
             
             if response.status_code != 200: 
                 print(f"  ❌ ZenRows API Error {response.status_code}: {response.text[:100]}")
+                time.sleep(2)
                 continue
 
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -72,13 +73,11 @@ def fetch_ebay_via_proxy(search_query, player_name):
             player_last_name = core_parts[-1] if core_parts else ""
 
             for item in listings:
-                # Ignore subtitles so "Pre-Owned" doesn't smoosh into the player's name
                 title_el = item.find(class_=lambda c: has_partial_class(c, 'title') and not has_partial_class(c, 'subtitle'))
                 price_el = item.find(class_=lambda c: has_partial_class(c, 'price'))
 
                 if not title_el or not price_el: continue
 
-                # Force spaces between HTML spans
                 title = title_el.get_text(separator=" ").strip()
                 price_text = price_el.get_text(separator=" ").strip().upper()
 
