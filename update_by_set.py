@@ -27,19 +27,19 @@ def fetch_ebay_via_proxy(search_query, player_name):
     encoded_query = search_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
 
-    # Force a US IP address to prevent foreign currency conversion glitches
     proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us'}
     
     try:
         response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
-        if response.status_code != 200: return [], None
+        if response.status_code != 200: 
+            print(f"  ❌ Proxy Error: Status Code {response.status_code}")
+            return [], None
 
         soup = BeautifulSoup(response.text, 'html.parser')
         listings = soup.find_all(class_=lambda x: x and ('s-item' in x or 's-card' in x))
 
         parsed_comps = []
         first_discovered_image = None
-        player_last_name = player_name.split()[-1].lower() if player_name else ""
 
         for item in listings:
             title_el = item.find(class_=lambda x: x and 'title' in x.lower())
@@ -52,21 +52,14 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
             if "SHOP ON EBAY" in title.upper() or not title: continue
             
-            # Basic fallback pre-filter for player name
-            if player_last_name and player_last_name not in title.lower(): continue
-
-            # 🆔 THE DEDUPLICATION FIX: Extract the unchangeable 12-digit eBay Listing ID
-            # Specifically target the main item link to avoid hidden store links
-            link_el = item.find('a', class_=lambda x: x and 's-item__link' in x) or item.find('a', href=True)
+            # 🆔 THE FIX: Scan EVERY link in the HTML block until the exact 12-14 digit ID is captured
             ebay_id = None
-            if link_el:
-                href = link_el['href']
-                # 🔥 SAFELY IGNORES SEO TEXT IN URLs (e.g., /itm/Player-Name/123456789)
-                id_match = re.search(r'/itm/(?:.*?/)?(\d{11,14})', href)
+            for a_tag in item.find_all('a', href=True):
+                id_match = re.search(r'/itm/(?:.*?/)?(\d{11,14})', a_tag['href'])
                 if id_match:
                     ebay_id = id_match.group(1)
+                    break
             
-            # Skip rows where no explicit listing ID can be isolated to protect data integrity
             if not ebay_id: continue 
 
             # 📸 Image Extraction
@@ -80,10 +73,10 @@ def fetch_ebay_via_proxy(search_query, player_name):
             if listing_specific_img and not first_discovered_image:
                 first_discovered_image = listing_specific_img
 
-            # 💰 Price Parsing: Anchor strictly to the dollar sign to avoid shipping/conversion aggregation
+            # 💰 Price Parsing
             price_match = re.search(r'\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)', price_text)
 
-            # 🗓️ Date Parsing: Target the exact eBay HTML class for sold dates
+            # 🗓️ Date Parsing
             parsed_date = datetime.now(timezone.utc).isoformat()
             positive_span = item.find("span", class_=lambda x: x and 'POSITIVE' in x.upper())
             date_text = positive_span.text.strip() if positive_span else item.text
@@ -114,7 +107,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
         return [], None
 
 # ==============================================================================
-# 🛡️ THE SMART CLASSIFIER 
+# 🛡️ THE SMART CLASSIFIER (Upgraded with Suffix Ignore)
 # ==============================================================================
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants, is_extreme_length):
     title_lower = ebay_title.lower()
@@ -140,9 +133,12 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
                 return False
         return True
 
-    # 1. 👤 EXACT PLAYER NAME ENFORCEMENT
+    # 1. 👤 EXACT PLAYER NAME ENFORCEMENT (THE FIX: Ignore suffixes)
     player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
-    if not all(part in title_words for part in player_parts): 
+    suffixes_to_ignore = {"jr", "sr", "ii", "iii", "iv", "v"}
+    core_player_parts = [p for p in player_parts if p not in suffixes_to_ignore]
+    
+    if not all(part in title_words for part in core_player_parts): 
         return None
 
     # 2. 🎯 STRICT YEAR ENFORCEMENT
@@ -150,7 +146,7 @@ def classify_comp(ebay_title, card_year, brand, series, player_name, card_number
     if found_years and str(card_year) not in found_years:
         return None
 
-    # 3. 🛑 STRICT BRAND ENFORCEMENT (Prevents fuzzy cross-brand leakage)
+    # 3. 🛑 STRICT BRAND ENFORCEMENT 
     if brand:
         brand_clean = re.sub(r'[^a-z0-9\s]', ' ', brand.lower())
         brand_clean = re.sub(r'\s+', ' ', brand_clean).strip()
@@ -211,7 +207,6 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
 
     variants_updated_today = {item['variant_id'] for item in (today_comps_response.data or [])}
 
-    # Strict sport parameter mapping prevents multi-sport brand overlap errors
     set_response = supabase.table("card_sets").select("id")\
         .eq("year", target_year)\
         .eq("brand", target_brand)\
@@ -234,12 +229,10 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
     for card in cards:
         clean_player_name = re.sub(r"^['\"]|['\"]$", "", card['player_name']).strip()
 
-        # Calculate Query Payload Length Bounds
         max_variant_len = max([len(v['variant_name']) for v in card['card_variants']]) if card['card_variants'] else 0
         theoretical_length = len(f"{target_year} {target_brand} {target_series} {clean_player_name}") + max_variant_len + 1
         is_extreme_length = theoretical_length > 80
 
-        # Dynamic Search Query Fallback Logic
         if is_extreme_length:
             search_term = f"{target_year} {target_brand} {target_series}"
         else:
@@ -247,11 +240,12 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
 
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
 
+        # 🚨 THE FIX: Let you know if the proxy fetched zero results
         if not raw_comps:
+            print(f"  ⚠️ No raw comps scraped for {clean_player_name}.")
             time.sleep(1)
             continue
 
-        # Master Fallback Placeholder Image Synchronizer
         if live_card_image:
             current_image = card.get('image_url') or ""
             if not current_image or "placeholder" in current_image.lower() or "default" in current_image.lower():
@@ -264,7 +258,7 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
 
         price_entries = []
         for comp in raw_comps:
-            if comp['price'] > 10000: continue # Hard ceiling filters out obvious non-card junk matches
+            if comp['price'] > 10000: continue 
 
             matched_variant_id = classify_comp(
                 ebay_title=comp['title'],
@@ -292,6 +286,10 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                 "ebay_id": comp['ebay_id']
             })
 
+        # 🚨 THE FIX: Let you know if the classifier rejected everything
+        if not price_entries:
+            print(f"  ⏭️ {len(raw_comps)} listings scraped, but 0 passed the strict classifier for {clean_player_name}.")
+
         if price_entries:
             variant_groups = {}
             for entry in price_entries:
@@ -303,11 +301,9 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                 if vid in variants_updated_today: continue
 
                 try:
-                    # Query database for existing items before trying to process matches
                     existing_comps = supabase.table("price_comps").select("ebay_id").eq("variant_id", vid).execute()
                     existing_ids = set(c['ebay_id'] for c in (existing_comps.data or []))
 
-                    # Server-side Dynamic Median Outlier Suppression Block
                     historical_prices = sorted([float(c['sale_price']) for c in (existing_comps.data or []) if 'sale_price' in c])
                     median_price = 0
                     if historical_prices:
@@ -316,19 +312,17 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
 
                     max_allowed_price = median_price * 5 if median_price > 0 else float('inf')
 
-                    # Extract listings that do not conflict with existing database unique identifiers
                     unique_new_entries = []
                     for entry in entries:
                         sale_price = float(entry['sale_price'])
                         if median_price > 0 and sale_price > max_allowed_price:
-                            continue # Suppress fraudulent or mismatched price sales anomalies
+                            continue 
                             
                         if entry['ebay_id'] not in existing_ids:
                             unique_new_entries.append(entry)
                             existing_ids.add(entry['ebay_id'])
 
                     if unique_new_entries:
-                        # Database level unique constraint will catch anything left behind
                         supabase.table("price_comps").insert(unique_new_entries[:10]).execute()
                         print(f"✅ SUCCESS: Added {len(unique_new_entries)} clean verified sales for {clean_player_name}")
                     else:
