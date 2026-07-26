@@ -20,7 +20,7 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==============================================================================
-# 📡 EBAY PROXY SCRAPER (Upgraded with Unique ID Extraction)
+# 📡 EBAY PROXY SCRAPER 
 # ==============================================================================
 def fetch_ebay_via_proxy(search_query, player_name):
     print(f"📡 Routing proxy query for: '{search_query}'...")
@@ -56,11 +56,13 @@ def fetch_ebay_via_proxy(search_query, player_name):
             if player_last_name and player_last_name not in title.lower(): continue
 
             # 🆔 THE DEDUPLICATION FIX: Extract the unchangeable 12-digit eBay Listing ID
-            link_el = item.find('a', href=True)
+            # Specifically target the main item link to avoid hidden store links
+            link_el = item.find('a', class_=lambda x: x and 's-item__link' in x) or item.find('a', href=True)
             ebay_id = None
             if link_el:
                 href = link_el['href']
-                id_match = re.search(r'/itm/(\d+)', href)
+                # 🔥 SAFELY IGNORES SEO TEXT IN URLs (e.g., /itm/Player-Name/123456789)
+                id_match = re.search(r'/itm/(?:.*?/)?(\d{11,14})', href)
                 if id_match:
                     ebay_id = id_match.group(1)
             
@@ -112,7 +114,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
         return [], None
 
 # ==============================================================================
-# 🛡️ THE SMART CLASSIFIER (Includes Strict Brand, Year & Series Filtering)
+# 🛡️ THE SMART CLASSIFIER 
 # ==============================================================================
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants, is_extreme_length):
     title_lower = ebay_title.lower()
