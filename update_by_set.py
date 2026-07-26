@@ -19,17 +19,23 @@ if not all([SUPABASE_URL, SUPABASE_KEY, SCRAPER_API_KEY]):
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def fetch_ebay_via_proxy(search_query, player_name):
-    # 🎯 FIX 1: Strip apostrophes so eBay's search engine doesn't choke on "Let's Go"
     clean_query = search_query.replace("'", "").replace("’", "")
     print(f"📡 Routing proxy query for: '{clean_query}'...")
     
     encoded_query = clean_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
 
-    proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us', 'device_type': 'desktop'}
+    # 🇺🇸 THE FIX: Added 'premium': 'true' to use Residential Proxies and bypass the eBay Login Wall
+    proxy_params = {
+        'api_key': SCRAPER_API_KEY, 
+        'url': ebay_url, 
+        'country_code': 'us', 
+        'device_type': 'desktop',
+        'premium': 'true' 
+    }
     
-    # 🎯 FIX 2: Anti-Captcha Auto-Retry Loop
-    for attempt in range(2):
+    # 🎯 Anti-Captcha / Anti-Login Wall Auto-Retry Loop
+    for attempt in range(3):
         try:
             response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=60)
             if response.status_code != 200: 
@@ -37,13 +43,13 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Safely grab the root items without triggering list attribute crashes
             listings = soup.find_all(lambda tag: tag.name in ['li', 'div'] and tag.get('class') and any('s-item' in c or 's-card' in c for c in tag.get('class')))
 
-            # Intercept empty pages and check for eBay bot-blockers
+            # Intercept empty pages and check for eBay bot-blockers or login walls
             if not listings:
-                if "captcha" in response.text.lower() or "verify you are a human" in response.text.lower():
-                    print(f"  🛑 eBay Anti-Bot Captcha hit. Retrying with fresh IP ({attempt+1}/2)...")
+                html_lower = response.text.lower()
+                if "captcha" in html_lower or "verify you are a human" in html_lower or "signin.ebay.com" in html_lower or "sign in to view" in html_lower:
+                    print(f"  🛑 eBay Login/Captcha Wall hit. Retrying with fresh Residential IP ({attempt+1}/3)...")
                     time.sleep(3)
                     continue
                 else:
@@ -52,14 +58,12 @@ def fetch_ebay_via_proxy(search_query, player_name):
             parsed_comps = []
             first_discovered_image = None
             
-            # Suffix-Safe Last Name Extraction (Prevents Mahomes II from failing)
             player_parts = re.sub(r'[^a-z0-9\s]', ' ', player_name.lower()).split()
             suffixes = {"jr", "sr", "ii", "iii", "iv", "v"}
             core_parts = [p for p in player_parts if p not in suffixes]
             player_last_name = core_parts[-1] if core_parts else ""
 
             for item in listings:
-                # 🎯 FIX 3: Explicitly ignore "subtitle" classes to prevent the "Pre-Owned" bug
                 title_el = item.find(class_=lambda c: c and 'title' in str(c).lower() and 'subtitle' not in str(c).lower())
                 price_el = item.find(class_=lambda c: c and 'price' in str(c).lower())
 
@@ -82,7 +86,7 @@ def fetch_ebay_via_proxy(search_query, player_name):
                         ebay_id = id_match.group(1)
                         break
                 
-                # Synthetic Hash Fallback for hidden URLs
+                # Synthetic Hash Fallback
                 if not ebay_id:
                     raw_str = f"{title}_{price_text}"
                     ebay_id = "SYN-" + hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:12]
@@ -134,7 +138,6 @@ def fetch_ebay_via_proxy(search_query, player_name):
 
 # 🛡️ THE SMART CLASSIFIER 
 def classify_comp(ebay_title, card_year, brand, series, player_name, card_number, variants, is_extreme_length):
-    # 🎯 FIX 1 (Continued): Strip apostrophes internally to bridge "Let's Go" and "Lets Go"
     title_lower = ebay_title.lower().replace("'", "").replace("’", "")
     
     title_alphanum = re.sub(r'[^a-z0-9\s]', ' ', title_lower)
