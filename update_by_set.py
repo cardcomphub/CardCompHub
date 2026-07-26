@@ -22,10 +22,10 @@ def fetch_ebay_via_proxy(search_query, player_name):
     encoded_query = search_query.replace(" ", "+")
     ebay_url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}&LH_Complete=1&LH_Sold=1"
 
-    # 🇺🇸 GUARDRAIL 1: Force a US IP address to prevent foreign currency conversion glitches
-    proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us'}
+    # 🇺🇸 GUARDRAIL 1: Force a US IP address and Desktop DOM to prevent mobile HTML glitches
+    proxy_params = {'api_key': SCRAPER_API_KEY, 'url': ebay_url, 'country_code': 'us', 'device_type': 'desktop'}
     try:
-        response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=30)
+        response = requests.get('http://api.scraperapi.com', params=proxy_params, timeout=60)
         if response.status_code != 200: return [], None
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -220,6 +220,7 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
         raw_comps, live_card_image = fetch_ebay_via_proxy(search_term, card['player_name'])
 
         if not raw_comps:
+            print(f"  ⚠️ No raw comps scraped for {clean_player_name}.")
             time.sleep(1)
             continue
 
@@ -264,6 +265,9 @@ def run_pipeline(target_year, target_brand, target_series, target_sport):
                 "grade": grade,
                 "sale_image_url": comp['listing_image'] or None
             })
+
+        if not price_entries:
+            print(f"  ⏭️ {len(raw_comps)} listings scraped, but 0 passed the strict classifier for {clean_player_name}.")
 
         if price_entries:
             variant_groups = {}
